@@ -11,4 +11,5 @@
 
 SHA-256 见附件 `SHA256SUMS-v4.2.2-rc1.txt`。不要把此预发布版本当作正式商店发行版。旧 `v4.2.0-rc1` 原样保留。
 
-详细依据与测试边界：[内容核验](https://github.com/luo12200159/Physics/blob/v4.2.2-rc1/docs/content-quality-v4.2.2.md) · [测试结果](https://github.com/luo12200159/Physics/blob/v4.2.2-rc1/docs/content-test-results-v4.2.2.md) · [教师待审核清单](https://github.com/luo12200159/Physics/blob/v4.2.2-rc1/docs/content-teacher-review.md)。
+详细依据与测试边界：[内容核验](https://github.com/xtu2023/Physics/blob/v4.2.2-rc1/docs/content-quality-v4.2.2.md) · [测试结果](https://github.com/xtu2023/Physics/blob/v4.2.2-rc1/docs/content-test-results-v4.2.2.md) · [教师待审核清单](https://github.com/xtu2023/Physics/blob/v4.2.2-rc1/docs/content-teacher-review.md)。
+
