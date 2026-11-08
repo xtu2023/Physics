@@ -7,10 +7,12 @@
 
 ## 下载 v4.2.2 教学内容开发候选
 
-- [Android 学生端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Student-Android-v4.2.2.apk)
-- [Android 教师端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Teacher-Android-v4.2.2.apk)
-- [Windows 安装程序](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-Installer-v4.2.2.exe) · [Windows 发布 ZIP](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-v4.2.2.zip)
-- [SHA-256 校验清单](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/SHA256SUMS-v4.2.2-rc1.txt)；源码保留在仓库，不另上传源码包附件。
+- [Android 学生端 APK](https://github.com/xtu2023/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Student-Android-v4.2.2.apk)
+- [Android 教师端 APK](https://github.com/xtu2023/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Teacher-Android-v4.2.2.apk)
+- [Windows 安装程序](https://github.com/xtu2023/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-Installer-v4.2.2.exe) · [Windows 发布 ZIP](https://github.com/xtu2023/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-v4.2.2.zip)
+- [SHA-256 校验清单](https://github.com/xtu2023/Physics/releases/download/v4.2.2-rc1/SHA256SUMS-v4.2.2-rc1.txt)；源码保留在仓库，不另上传源码包附件。
+
+后续版本统一发布至 [xtu2023/Physics](https://github.com/xtu2023/Physics/releases)；以下旧版下载链接仍指向原仓库。
 
 本候选修正 100 道高二静电场与电路题的教材册及内部目录映射，为平均速度、欧姆定律和牛顿第二定律补充课程样板、前概念诊断与教师建议；四道高一多表征草稿仍待教师审核。1,897 道内置完整题中 766 道与仓库目录匹配，1,131 道教材节待核验；这不是教材实本或教学效果认证。详见[内容核验记录](docs/content-quality-v4.2.2.md)和[教师待审核清单](docs/content-teacher-review.md)。
 
@@ -328,3 +330,4 @@
 ## 费曼物理 v3.3.0
 
 本版本双端共享当前网页源码：学生可仅凭邀请码或二维码加入班级，加入后可修改班级备注名；教师创建班级仍保留按班级隔离的管理权限。专项变式由同一生成、校验、审核、作答和证据链处理；内部兼容标识、旧档案、题目 ID 与历史版权字段不迁移或重写。
+
