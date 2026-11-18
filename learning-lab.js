@@ -43,10 +43,14 @@
     tab: "dashboard",
     selectedQuestionId: "",
     session: null,
+    draftTimer: 0,
+    savingAttempt: false,
     diagnosticId: "",
     diagnosticResult: null,
     lastCompleted: null,
     modelType: "projectile",
+    inquiryMode: false,
+    inquiryId: "",
     modelParams: freshModelParams(),
     rayParams: { mode: "refraction", incidenceAngle: 35, n1: 1, n2: 1.5 },
     animationFrame: 0,
@@ -163,7 +167,7 @@
           <div class="lab-brand">
             <span class="lab-mark" aria-hidden="true">⌬</span>
             <div>
-              <span class="lab-kicker">PHYSICS LEARNING LOOP</span>
+              <span class="lab-kicker">物理探究与学习证据</span>
               <h2>物理学习实验室</h2>
               <p>诊断 → 建模 → 推理 → 验证 → 练习 → 迁移 → 复习 → 评估</p>
             </div>
@@ -198,17 +202,25 @@
     lab.content.addEventListener("input", handleInput);
     lab.content.addEventListener("change", handleChange);
     lab.content.addEventListener("keydown", handleReviewShortcut);
+    lab.content.addEventListener("input", queuePracticeDraft);
+    lab.content.addEventListener("change", queuePracticeDraft);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) void persistPracticeDraft();
+    });
+    window.addEventListener("pagehide", () => { void persistPracticeDraft(); });
     lab.dialog.addEventListener("cancel", (event) => {
       if (lab.tab === "teacher" && !captureTeacherViewDraft()) {
         event.preventDefault();
         return;
       }
       stopAllLiveActivities();
+      void persistPracticeDraft();
     });
     lab.dialog.addEventListener("close", stopAllLiveActivities);
   }
 
   function openLab(tab = "dashboard", questionId = "", diagnosticId = "") {
+    if (lab.session) void persistPracticeDraft();
     lab.app = window.PhysicsStudioApp || lab.app;
     const wasOpen = Boolean(lab.dialog?.open);
     if (questionId) {
@@ -231,8 +243,9 @@
     document.body.classList.remove("drawer-open");
   }
 
-  function closeLab() {
+  async function closeLab() {
     if (lab.tab === "teacher" && !captureTeacherViewDraft()) return;
+    if (!(await persistPracticeDraft())) return;
     stopAllLiveActivities();
     lab.dialog.close();
   }
@@ -261,9 +274,12 @@
     // lightweight first paint.
     lab.teacherHydrated = Boolean(lab.dialog?.open && lab.tab === "teacher");
     renderProfileOptions();
-    document.dispatchEvent(new CustomEvent("physics-learning-state-changed", {
-      detail: { profileId: lab.state.activeProfileId }
-    }));
+    const profileId = lab.state.activeProfileId;
+    const commit = engine.awaitLastSave();
+    commit.then(() => document.dispatchEvent(new CustomEvent("physics-learning-state-changed", {
+      detail: { profileId }
+    })), () => { /* storage repository emits the explicit data-not-saved notice */ });
+    return commit;
   }
 
   function derivedLearningKey(questions) {
@@ -891,6 +907,8 @@
             <span>${escapeHtml(question.difficulty)} · ${escapeHtml(question.questionType || question.examQuestionType || "物理题")}</span>
           </div>
           <h3>${escapeHtml(question.title)}</h3>
+          <p id="practiceDraftStatus" role="status">${session.restoredDraft ? "已恢复本机草稿；尚未提交，不计学习证据。" : "作答输入会自动保存在本机；草稿不计完成。"}</p>
+          <button class="lab-secondary-button" data-lab-action="save-practice-draft" type="button">保存草稿</button>
           <div class="tutor-stem">${escapeHtml(question.content)}</div>
           ${Array.isArray(question.examPoints) ? `
             <div class="tutor-points"><strong>考点</strong>${question.examPoints.map((point) => `<span>${escapeHtml(point)}</span>`).join("")}</div>` : ""}
@@ -1115,7 +1133,7 @@
     return `
       <section class="model-lab">
         <div class="lab-card model-sidebar">
-          <div class="lab-card-head"><div><span>SYNCHRONIZED MODEL</span><h3>题目—模型—图像—仿真</h3></div></div>
+          <div class="lab-card-head"><div><span>理想模型，不是实测</span><h3>题目—模型—图像—仿真</h3></div></div>
           ${linkedQuestion ? `<div class="linked-model-context"><span>当前关联题</span><strong>${escapeHtml(linkedQuestion.title)}</strong><small>${escapeHtml(linkedQuestion.topic)} · 已按知识主题选择模型；调整参数不会写入作答或掌握证据。</small></div>` : ""}
           <div class="model-tabs">
             ${MODEL_CATALOG.map(([key, label, detail]) => `
@@ -1132,9 +1150,87 @@
             <strong>验证规则</strong>
             <p>图像、方程和数值来自同一组变量；仿真使用理想模型，结论只在列出的假设下成立。</p>
           </div>
+          ${renderInquiryControls()}
         </div>
         <div class="model-output" id="labModelOutput"></div>
       </section>`;
+  }
+
+  function currentInquiry() {
+    return lab.state.experimentRecords.find((item) => item.id === lab.inquiryId && item.type === "guided-inquiry"
+      && item.profileId === lab.state.activeProfileId && item.model === lab.modelType) || null;
+  }
+
+  function inquiryPracticeQuestion(record) {
+    return getQuestions().find((question) => question.id !== record.sourceQuestionId
+      && question.grade === engine.activeProfile(lab.state).grade
+      && question.fullTextIncluded !== false && !question.resourceOnly
+      && !/待.*审核|退回|草稿/.test(question.contentReviewStatus || "")
+      && visuals?.modelForQuestion(question) === record.model);
+  }
+
+  function renderInquiryControls() {
+    const task = window.PhysicsStudioTeachingSequences?.inquiries?.[lab.modelType];
+    if (!task) return "";
+    const record = currentInquiry();
+    if (!lab.inquiryMode) return `<section class="model-principles"><strong>探究任务：${escapeHtml(task.title)}</strong><p>先预测，再记录参数与输出、解释条件，最后关联新的独立作答。浏览模型不算实验完成。</p><button class="lab-secondary-button" data-lab-action="begin-inquiry" type="button">开始探究（先预测）</button></section>`;
+    const practice = record?.explanation ? inquiryPracticeQuestion(record) : null;
+    return `<section class="model-principles" data-inquiry-workbench>
+      <h4>${escapeHtml(task.title)}</h4><p>${escapeHtml(task.prompt)}</p>
+      ${!record ? `<label>我的预测<textarea id="inquiryPrediction" rows="3" maxlength="5000"></textarea></label><label>预测依据与条件<textarea id="inquiryReason" rows="3" maxlength="5000"></textarea></label><button class="lab-primary-button" data-lab-action="predict-inquiry" type="button">保存预测</button>` : `<p>预测：${escapeHtml(record.prediction)}；依据：${escapeHtml(record.predictionReason)}</p>
+        ${["predicted", "observed"].includes(record.status) ? '<button class="lab-secondary-button" data-lab-action="observe-inquiry" type="button">记录当前参数与模型输出</button>' : ""}
+        ${record.observations.map((entry, index) => `<details><summary>第 ${index + 1} 组理想模型记录</summary><p>参数：${escapeHtml(JSON.stringify(entry.params))}</p><p>输出：${escapeHtml(JSON.stringify(entry.output))}</p><small>记录ID：${escapeHtml(entry.id)}</small></details>`).join("")}
+        ${record.status === "observed" ? `<p>${escapeHtml(task.reflection)}</p><label>我的解释（待教师复核）<textarea id="inquiryExplanation" maxlength="10000" rows="4"></textarea></label><button class="lab-primary-button" data-lab-action="explain-inquiry" type="button">保存解释，安排新题验证</button>` : ""}
+        ${record.explanation ? `<p>解释：${escapeHtml(record.explanation)}</p><p>已关联正式作答 ${record.transferEvidenceIds.length} 条。关联不等于迁移达标；仍按评分、提示、模型及日期核验。</p>${practice ? '<button class="lab-primary-button" data-lab-action="practice-inquiry" type="button">独立做另一道题</button>' : '<p>当前年级暂无另一道已发布同主题题，请教师选配后复测。</p>'}` : ""}
+        <small>探究证据ID：${escapeHtml(record.id)}；${escapeHtml(record.verificationStatus)}，不按文字长度自动评分。</small>
+        ${record.teacherFeedback ? `<p>教师反馈：${escapeHtml(record.teacherFeedback.comment)}（仅定性核对，不代替独立作答与延迟复测）</p>` : ""}`}
+      ${record ? '<button class="lab-secondary-button" data-lab-action="restart-inquiry" type="button">新建探究（保留历史）</button>' : ""}
+      <button class="lab-secondary-button" data-lab-action="leave-inquiry" type="button">返回自由探索（保留记录）</button>
+    </section>`;
+  }
+
+  async function handleInquiryAction(action) {
+    const sequence = window.PhysicsStudioTeachingSequences;
+    const task = sequence?.inquiries?.[lab.modelType];
+    if (!task) return;
+    if (action === "begin-inquiry") {
+      stopModelAnimation();
+      lab.inquiryMode = true;
+      lab.inquiryId = [...lab.state.experimentRecords].reverse().find((item) => item.type === "guided-inquiry"
+        && item.model === lab.modelType && item.profileId === lab.state.activeProfileId)?.id || "";
+      lab.modelParams[lab.modelType] = { ...task.params };
+      renderPanel();
+      return;
+    }
+    if (action === "leave-inquiry") { lab.inquiryMode = false; renderPanel(); return; }
+    if (action === "restart-inquiry") { lab.inquiryId = ""; lab.modelParams[lab.modelType] = { ...task.params }; renderPanel(); return; }
+    const before = JSON.parse(JSON.stringify(lab.state));
+    const previousId = lab.inquiryId;
+    try {
+      if (action === "predict-inquiry") {
+        const record = sequence.beginInquiry(lab.state, lab.modelType, document.getElementById("inquiryPrediction")?.value,
+          document.getElementById("inquiryReason")?.value, lab.selectedQuestionId);
+        lab.inquiryId = record.id;
+      } else if (action === "observe-inquiry") sequence.observeInquiry(lab.state, lab.inquiryId, lab.modelParams[lab.modelType]);
+      else if (action === "explain-inquiry") sequence.explainInquiry(lab.state, lab.inquiryId, document.getElementById("inquiryExplanation")?.value);
+      else if (action === "practice-inquiry") {
+        const record = currentInquiry();
+        const question = record && inquiryPracticeQuestion(record);
+        if (!question) throw new Error("暂无可用的新题，请教师选配。");
+        lab.selectedQuestionId = question.id;
+        lab.session = newSession(question);
+        lab.session.inquiryId = record.id;
+        lab.tab = "tutor";
+        renderPanel();
+        return;
+      }
+      await saveLearningState();
+      renderPanel();
+    } catch (error) {
+      lab.state = before;
+      lab.inquiryId = previousId;
+      showLabMessage(error.message || "探究记录未保存", true);
+    }
   }
 
   function modelControls() {
@@ -1154,7 +1250,7 @@
         <div class="model-controls">
           ${rangeControl("mass", "质量 m", params.mass, 0.5, 10, 0.1, "kg")}
           ${rangeControl("angle", "斜面角 θ", params.angle, 5, 60, 1, "°")}
-          ${rangeControl("mu", "动摩擦因数 μ", params.mu, 0, 0.8, 0.01, "")}
+          ${rangeControl("mu", "简化假设 μs=μk", params.mu, 0, 0.8, 0.01, "")}
           ${rangeControl("g", "重力加速度 g", params.g, 1, 15, 0.1, "m/s²")}
           ${rangeControl("t", "观察时刻 t", params.t, 0, 5, 0.05, "s")}
         </div>`;
@@ -1223,6 +1319,11 @@
   function updateModelOutput() {
     const output = document.getElementById("labModelOutput");
     if (!output) return;
+    if (lab.inquiryMode && window.PhysicsStudioTeachingSequences?.inquiries?.[lab.modelType]
+      && !currentInquiry()?.observations?.length) {
+      output.innerHTML = '<section class="lab-card"><h3>先保存预测，再记录模型输出</h3><p>预测不自动判分；记录后会显示模型图像与数值。此次探究不属于独立摸底。</p></section>';
+      return;
+    }
     const renderers = {
       projectile: projectileModel,
       incline: inclineModel,
@@ -1318,12 +1419,13 @@
   function inclineModel() {
     const { mass, angle, mu, g, t } = lab.modelParams.incline;
     const radians = angle * Math.PI / 180;
-    const gravityAlong = mass * g * Math.sin(radians);
-    const normal = mass * g * Math.cos(radians);
-    const friction = mu * normal;
-    const acceleration = Math.max(0, (gravityAlong - friction) / mass);
-    const distance = 0.5 * acceleration * t ** 2;
-    const speed = acceleration * t;
+    const { gravityAlong, normal, friction, acceleration, distance, speed, regime } = visuals.inclineMotion({ mass, angle, mu, g, t });
+    const slopeLength = 240;
+    const topX = 440;
+    const topY = 280 - slopeLength * Math.sin(radians);
+    const displacement = Math.min(slopeLength - 35, 30 + distance * 8);
+    const blockX = topX - displacement * Math.cos(radians);
+    const blockY = topY + displacement * Math.sin(radians) - 20;
     const dimension = engine.validateDimension("F=m*a");
     const maxT = 5;
     return `
@@ -1334,20 +1436,19 @@
         </div>
         <svg class="main-simulation" viewBox="0 0 650 310" role="img" aria-label="斜面受力图">
           <defs><marker id="arrow-incline" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z"></path></marker></defs>
-          <path class="incline-surface" d="M80,260 L570,${260 - 490 * Math.tan(radians)} L570,260 Z"></path>
-          <g transform="translate(${260 + Math.min(170, distance * 8)},${190 - Math.min(100, distance * 8 * Math.tan(radians))}) rotate(${-angle})">
+          <path class="incline-surface" d="M${topX - slopeLength * Math.cos(radians)},280 L${topX},${topY} L${topX},280 Z"></path>
+          <g transform="translate(${blockX},${blockY}) rotate(${-angle})">
             <rect class="sim-block" x="-28" y="-20" width="56" height="40" rx="6"></rect>
           </g>
-          <line class="force-vector" x1="260" y1="190" x2="260" y2="265" marker-end="url(#arrow-incline)"></line>
-          <text class="force-label" x="268" y="252">mg</text>
-          <line class="normal-vector" x1="260" y1="190" x2="${260 - 70 * Math.sin(radians)}" y2="${190 - 70 * Math.cos(radians)}" marker-end="url(#arrow-incline)"></line>
-          <text class="force-label" x="${205 - 30 * Math.sin(radians)}" y="${145 - 20 * Math.cos(radians)}">N</text>
-          <line class="friction-vector" x1="260" y1="190" x2="${260 - 70 * Math.cos(radians)}" y2="${190 + 70 * Math.sin(radians)}" marker-end="url(#arrow-incline)"></line>
-          <text class="force-label" x="${205 - 30 * Math.cos(radians)}" y="${210 + 20 * Math.sin(radians)}">f</text>
+          <line class="force-vector" x1="${blockX}" y1="${blockY}" x2="${blockX}" y2="${blockY + 65}" marker-end="url(#arrow-incline)"></line>
+          <text class="force-label" x="${blockX + 8}" y="${blockY + 60}">mg</text>
+          <line class="normal-vector" x1="${blockX}" y1="${blockY}" x2="${blockX - 60 * Math.sin(radians)}" y2="${blockY - 60 * Math.cos(radians)}" marker-end="url(#arrow-incline)"></line>
+          <text class="force-label" x="${blockX - 60 * Math.sin(radians) - 20}" y="${blockY - 60 * Math.cos(radians)}">N</text>
+          ${friction > 0 ? `<line class="friction-vector" x1="${blockX}" y1="${blockY}" x2="${blockX + 65 * Math.cos(radians)}" y2="${blockY - 65 * Math.sin(radians)}" marker-end="url(#arrow-incline)"></line><text class="force-label" x="${blockX + 65 * Math.cos(radians) + 5}" y="${blockY - 65 * Math.sin(radians)}">f</text>` : ""}
         </svg>
         <div class="model-equation-grid">
           <article><span>垂直斜面</span><strong>N = mgcosθ</strong><small>${formatNumber(normal)} N</small></article>
-          <article><span>沿斜面</span><strong>ma = mgsinθ − μmgcosθ</strong><small>${gravityAlong <= friction ? "由静止释放时不会沿斜面下滑" : `a = ${formatNumber(acceleration)} m/s²`}</small></article>
+          <article><span>沿斜面向下为正</span><strong>${regime === "static" ? "静止：fₛ = mgsinθ，a=0" : "ma = mgsinθ − μₖmgcosθ"}</strong><small>${regime === "static" ? "本简化模型中静摩擦可平衡下滑分力" : `a = ${formatNumber(acceleration)} m/s²`}</small></article>
           <article><span>运动结果</span><strong>v = at；s = ½at²</strong><small>t=${formatNumber(t)} s 时，v=${formatNumber(speed)} m/s，s=${formatNumber(distance)} m</small></article>
           <article class="${dimension.valid ? "verified" : "warning"}"><span>量纲校验</span><strong>${dimension.status}</strong><small>${escapeHtml(dimension.message)}</small></article>
         </div>
@@ -1356,7 +1457,7 @@
           ${miniFunctionGraph("v-t 图", maxT, Math.max(1, acceleration * maxT), (time) => acceleration * time, t)}
           ${miniFunctionGraph("a-t 图", maxT, Math.max(1, acceleration), () => acceleration, t)}
         </div>
-        <p class="model-assumption">假设：物块视为质点、斜面固定、动摩擦因数恒定。若由静止释放且 mgsinθ ≤ μmgcosθ，实际是否滑动还需比较最大静摩擦力。</p>
+        <p class="model-assumption">假设：从静止释放、斜面固定，并显式简化 μₛ=μₖ=μ。静止时 fₛ=mgsinθ（不超过 μₛN）；滑动时 fₖ=μₖN。真实材料的两种系数可不同，不能只由动摩擦系数判断是否开始滑动。画面为示意，位移过大时位置截在边界。</p>
       </section>`;
   }
 
@@ -2625,17 +2726,77 @@
       groups.set(rubricKey, group);
     });
     const profiles = new Map((state.profiles || []).map((profile) => [profile.id, profile]));
+    const reviewed = (state.attempts || []).filter((attempt) => attempt.gradingHistory?.length
+      && !engine.isPendingManualReview(attempt)).slice(-12).reverse();
     return `<section class="lab-card manual-review-queue manual-review-workbench" id="teacher-manual-review">
-      <div class="lab-card-head"><div><span>STUDENT ANSWER REVIEW</span><h3>学生作答待批阅</h3></div><strong>${pending.length}</strong></div>
+      <div class="lab-card-head"><div><span>教师核对原始证据</span><h3>学生作答待批阅</h3></div><strong>${pending.length}</strong></div>
       <p>按题目与评分量规分组连续批阅。聚焦某份答案后可按 1/2/3 快捷选择正确、部分正确、需订正；教师确认前不进入正式正确率。</p>
+      <datalist id="teacherReviewComments"><option value="研究对象正确，需补充规律适用条件。"></option><option value="列式正确，请检查正方向与单位换算。"></option><option value="请解释数据如何支持结论，并说明控制变量。"></option><option value="模型、过程与结论符合本题评分量规。"></option></datalist>
       ${pending.length ? `<div class="manual-review-list">${[...groups.values()].map(({ question, attempts }) => `
         <section class="manual-review-group"><header><strong>${escapeHtml(question?.title || attempts[0].questionId)}</strong><span>${escapeHtml(question?.questionType || attempts[0].questionType || "开放题")} · ${attempts.length} 份</span></header>
         ${attempts.map((attempt) => {
           const student = profiles.get(attempt.profileId);
-          const suggestion = attempt.reviewSuggestion;
-          return `<article tabindex="0" data-review-attempt="${escapeHtml(attempt.id)}"><div><strong>${escapeHtml(student?.name || "未知学生")}</strong><span>${escapeHtml(attempt.topic || question?.topic || "未标注知识点")} · ${escapeHtml(attempt.createdAt || "")}</span><p>${escapeHtml(attempt.finalAnswer || attempt.answer || "未填写作答")}</p>${suggestion ? `<small>AI 仅供参考：${escapeHtml(suggestion.suggestedComment || "无评语")}；不确定项：${escapeHtml((suggestion.uncertainties || []).join("、") || "未说明")}。尚未写入正式评分。</small>` : ""}</div><div class="teacher-inline-actions"><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="correct" data-review-score="1" data-review-comment="关键规律、过程与结论符合评分量规。" type="button">1 正确</button><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="partial" data-review-score="0.5" data-review-comment="方法部分正确，需补全关键步骤或条件。" type="button">2 部分正确</button><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="incorrect" data-review-score="0" data-review-comment="关键建模或结论不符合评分量规，需重新订正。" type="button">3 需订正</button></div></article>`;
+          return renderManualReviewAnswer(attempt, question, student);
         }).join("")}</section>`).join("")}</div>` : `<p class="teacher-todo-empty">当前没有学生作答待人工复核。</p>`}
+      <details><summary>最近已批阅与改分记录（${reviewed.length} 份）</summary>${reviewed.map((attempt) => renderManualReviewAnswer(attempt, questionMap.get(attempt.questionId) || {}, profiles.get(attempt.profileId))).join("") || "暂无已批阅记录。"}</details>
     </section>`;
+  }
+
+  function renderInquiryReviewQueue() {
+    const records = (lab.state.experimentRecords || []).filter((item) => item.type === "guided-inquiry" && item.explanation).slice(-20).reverse();
+    if (!records.length) return "";
+    return `<section class="lab-card" id="teacher-inquiry-review"><h3>模型探究解释核对</h3><p>核对本机档案中的原始预测、理想模型记录和解释；定性反馈不生成正确率或掌握分数。跨设备记录须通过明确的档案导入，不暗示自动云同步。</p>
+      ${records.map((record) => `<details data-inquiry-review="${escapeHtml(record.id)}" data-review-revision="${Number(record.reviewRevision) || 0}"><summary>${escapeHtml(lab.state.profiles.find((profile) => profile.id === record.profileId)?.name || "未知学生")} · ${escapeHtml(record.title)} · ${escapeHtml(record.verificationStatus)}</summary>
+        <p>预测：${escapeHtml(record.prediction)}；依据：${escapeHtml(record.predictionReason)}</p>
+        ${record.observations.map((entry) => `<p>参数 ${escapeHtml(JSON.stringify(entry.params))}；理想模型输出 ${escapeHtml(JSON.stringify(entry.output))}；记录ID ${escapeHtml(entry.id)}</p>`).join("")}
+        <p>解释：${escapeHtml(record.explanation)}</p><p>关联作答ID：${escapeHtml(record.transferEvidenceIds.join("、") || "暂无，不判迁移达标")}</p>
+        <label>科学依据与下一步要求<textarea data-inquiry-review-comment rows="3" maxlength="1000">${escapeHtml(record.teacherFeedback?.comment || "")}</textarea></label>
+        <button class="lab-secondary-button" type="button" data-lab-action="review-inquiry" data-decision="checked">科学表述已核对</button>
+        <button class="lab-secondary-button" type="button" data-lab-action="review-inquiry" data-decision="needs-revision">需补充探究</button>
+        ${(record.reviewHistory || []).map((entry) => `<p>反馈修订 ${entry.next.revision} · ${escapeHtml(entry.next.reviewedAt)}：${escapeHtml(entry.next.comment)}</p>`).join("")}
+      </details>`).join("")}</section>`;
+  }
+
+  async function reviewInquiryAction(target) {
+    if (!isTeacherRole() || !window.PhysicsStudioTeacherLock?.isUnlocked?.()) return;
+    const container = target.closest("[data-inquiry-review]");
+    if (!container) return;
+    const before = JSON.parse(JSON.stringify(lab.state));
+    try {
+      window.PhysicsStudioTeachingSequences.reviewInquiry(lab.state, container.dataset.inquiryReview, {
+        decision: target.dataset.decision, expectedRevision: container.dataset.reviewRevision,
+        comment: container.querySelector("[data-inquiry-review-comment]")?.value
+      });
+      await saveLearningState();
+      renderPanel({ scrollTo: "#teacher-inquiry-review" });
+    } catch (error) { lab.state = before; showLabMessage(error.message || "探究反馈未保存", true); }
+  }
+
+  function renderManualReviewAnswer(attempt, question, student) {
+    const snapshot = attempt.questionSnapshot || attempt.grading?.questionSnapshot;
+    const revision = Number(attempt.reviewRevision) || 0;
+    const pending = engine.isPendingManualReview(attempt);
+    const suggestion = attempt.reviewSuggestion;
+    const rubric = question.rubric?.criteria?.map((item) => `${item.label}（${item.maxScore}分）`).join("；");
+    return `<article tabindex="0" data-review-attempt="${escapeHtml(attempt.id)}" data-review-revision="${revision}">
+      <strong>${escapeHtml(student?.name || "未知学生")} · ${escapeHtml(question.title || attempt.questionId)}</strong>
+      <p>${escapeHtml(attempt.topic || question.topic || "未标注知识点")} · ${escapeHtml(attempt.createdAt || "")} · 证据 ${escapeHtml(attempt.id)}</p>
+      <p>${escapeHtml(attempt.finalAnswer || attempt.answer || "未填写作答")}</p>
+      <details><summary>题目版本、原始建模与评分依据</summary>
+        <p>${snapshot ? `作答时题目修订 ${attempt.questionRevision || "未标注"}` : "旧记录未保存题目快照；以下是当前题面，不能假定与当时完全一致。"}</p>
+        <p>${escapeHtml(snapshot?.content || question.content || "无题干")}</p>
+        <p>参考解析：${escapeHtml(snapshot?.solution || question.solution || "无解析，需教师制定量规")}</p>
+        <p>量规：${escapeHtml(rubric || "按本题要求核对研究对象、规律条件、方程或实验依据、结论与单位；不适用的项目不计分。")}</p>
+        ${Object.entries(attempt.model || {}).filter(([, value]) => value).map(([key, value]) => `<p>${escapeHtml(({ object: "研究对象", known: "已知量", unknown: "未知量", process: "过程", assumptions: "假设", coordinates: "坐标", forces: "受力", equations: "方程", reasonableness: "结果检验" }[key] || key))}：${escapeHtml(value)}</p>`).join("")}
+        <p>学生解释：${escapeHtml(attempt.selfExplanation || "未填写")}</p>
+      </details>
+      ${suggestion ? `<p>AI 建议（不是评分）：${escapeHtml(suggestion.suggestedComment || "无评语")}；不确定项：${escapeHtml((suggestion.uncertainties || []).join("、") || "未说明")}</p>` : ""}
+      <label>评语／改分或撤销理由<input data-review-comment list="teacherReviewComments" maxlength="500" placeholder="选常用评语或填写本题的改进要求"></label>
+      <label>部分正确分值（0—1，不含两端）<input data-review-partial-score type="number" min="0.01" max="0.99" step="0.01" value="0.5"></label>
+      <div class="teacher-inline-actions">${[["correct", 1, "1 正确"], ["partial", 0.5, "2 部分正确"], ["incorrect", 0, "3 需订正"]].map(([status, score, label]) => `<button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="${status}" data-review-score="${score}" type="button">${pending ? label : `改评 ${label}`}</button>`).join("")}
+      ${attempt.gradingHistory?.at(-1)?.type === "teacher-review" ? `<button class="lab-secondary-button" data-lab-action="undo-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" type="button">撤销最近复核</button>` : ""}</div>
+      ${attempt.gradingHistory?.length ? `<details><summary>完整评分修订历史（${attempt.gradingHistory.length}）</summary>${attempt.gradingHistory.map((item) => `<p>修订 ${item.revision} · ${escapeHtml(item.reviewedAt)} · ${escapeHtml(item.type === "undo" ? "撤销" : "教师复核")}：${escapeHtml(item.previous?.status)} → ${escapeHtml(item.next?.status)}；${item.next?.score == null ? "不计入正确率" : `得分 ${item.next.score}`}；${escapeHtml(item.reason || item.next?.summary || "")}</p>`).join("")}</details>` : ""}
+    </article>`;
   }
 
   function buildDataHealthIssues(profiles, questions) {
@@ -2807,6 +2968,7 @@
       </section>
       ${renderDataHealth(dataHealthIssues)}
       ${renderManualReviewQueue(lab.state, questions, profile?.id)}
+      ${renderInquiryReviewQueue()}
       ${renderVariantReviewQueue(questions)}
     </section>`;
   }
@@ -3278,6 +3440,7 @@
       return;
     }
     if (tabTarget) {
+      if (!(await persistPracticeDraft())) return;
       captureSessionForm();
       const nextTab = tabTarget.dataset.labTab === "teacher" && !isTeacherRole()
         ? "dashboard"
@@ -3347,6 +3510,8 @@
     }
     const modelType = event.target.closest("[data-model-type]");
     if (modelType) {
+      lab.inquiryMode = false;
+      lab.inquiryId = "";
       lab.modelType = modelType.dataset.modelType;
       renderPanel();
       return;
@@ -3416,7 +3581,8 @@
     else if (action === "dismiss-completed") {
       lab.lastCompleted = null;
       renderPanel();
-    } else if (action === "play-model") playModel();
+    } else if (["begin-inquiry", "predict-inquiry", "observe-inquiry", "explain-inquiry", "practice-inquiry", "leave-inquiry", "restart-inquiry"].includes(action)) await handleInquiryAction(action);
+    else if (action === "play-model") playModel();
     else if (action === "reset-model") resetModel();
     else if (action === "check-dimension") checkDimensionTool();
     else if (action === "convert-unit") convertUnitTool();
@@ -3478,7 +3644,10 @@
     else if (action === "add-growth-record") saveGrowthRecord();
     else if (action === "preview-targeted-plan") previewTargetedPlan();
     else if (action === "approve-targeted-plan") approveTargetedPlan();
-    else if (action === "complete-manual-review") completeManualReviewAction(target);
+    else if (action === "save-practice-draft") await persistPracticeDraft();
+    else if (action === "complete-manual-review") await completeManualReviewAction(target);
+    else if (action === "undo-manual-review") await completeManualReviewAction(target, true);
+    else if (action === "review-inquiry") await reviewInquiryAction(target);
     else if (action === "bind-imported-report") resolveImportedReportIdentity(target, false);
     else if (action === "create-profile-for-report") resolveImportedReportIdentity(target, true);
     else if (action === "open-data-health-target") openDataHealthTarget(target);
@@ -3532,7 +3701,7 @@
   function deleteProfileLearningData() {
     const profile = engine.activeProfile(lab.state);
     if (!profile || !window.confirm(`删除“${profile.name}”的作答、诊断、试卷、复习、方案和实验记录？学生基本档案将保留。`)) return;
-    ["attempts", "variantAttempts", "diagnosticAttempts", "examRecords", "growthRecords", "experimentRecords", "learningPlans", "assessmentSessions", "broadCoverageChecks"].forEach((name) => {
+    ["attempts", "variantAttempts", "diagnosticAttempts", "examRecords", "growthRecords", "experimentRecords", "practiceDrafts", "learningPlans", "assessmentSessions", "broadCoverageChecks"].forEach((name) => {
       lab.state[name] = (lab.state[name] || []).filter((record) => record.profileId !== profile.id);
     });
     Object.keys(lab.state.reviews || {}).forEach((key) => {
@@ -3571,29 +3740,42 @@
     }
   }
 
-  function completeManualReviewAction(target) {
+  async function completeManualReviewAction(target, undo = false) {
+    if (!isTeacherRole()) return showLabMessage("请先解锁教师模式。", true);
     const attemptId = target?.dataset.attemptId;
     const status = target?.dataset.reviewStatus;
-    if (!attemptId || !["correct", "partial", "incorrect"].includes(status)) return;
-    // Open responses are reviewed from the visible grouped workbench.  Avoid a
-    // blocking prompt: the fixed rubric comment is persisted with the evidence
-    // and can be edited through the teacher review form before submission.
-    const summary = target?.dataset.reviewComment
+    if (!attemptId || (!undo && !["correct", "partial", "incorrect"].includes(status))) return;
+    const article = target.closest("[data-review-attempt]");
+    const enteredComment = article?.querySelector("[data-review-comment]")?.value.trim();
+    const attempt = lab.state.attempts.find((item) => item.id === attemptId);
+    const revision = Number(article?.dataset.reviewRevision || 0);
+    if ((undo || !engine.isPendingManualReview(attempt)) && !enteredComment) {
+      return showLabMessage("改分或撤销必须填写理由，原评分会保留。", true);
+    }
+    const summary = enteredComment || target?.dataset.reviewComment
       || (status === "correct" ? "教师按评分量规复核：关键规律与结论正确。"
         : status === "partial" ? "教师按评分量规复核：方法或结论部分正确，需订正缺失步骤。"
           : "教师按评分量规复核：结论或关键推理不正确，需重新建模。");
+    const before = JSON.parse(JSON.stringify(lab.state));
+    target.disabled = true;
     try {
-      engine.completeManualReview(lab.state, attemptId, {
+      if (undo) engine.undoManualReview(lab.state, attemptId, revision, enteredComment);
+      else engine.completeManualReview(lab.state, attemptId, {
         status,
-        score: Number(target.dataset.reviewScore),
+        score: status === "partial" ? Number(article?.querySelector("[data-review-partial-score]")?.value) : Number(target.dataset.reviewScore),
+        expectedRevision: revision,
+        allowRevision: true,
         summary,
         reviewedBy: "本机教师"
       });
-      saveLearningState();
-      showLabMessage("人工复核已保存，相关统计将在刷新后更新。", false);
-      renderPanel();
+      await saveLearningState();
+      showLabMessage(undo ? "已撤销并保留修订历史，统计按恢复后的评分重算。" : "人工复核已保存，修订记录可追溯。", false);
+      renderPanel({ scrollTo: "#teacher-manual-review" });
     } catch (error) {
+      lab.state = before;
       showLabMessage(error.message || "人工复核保存失败", true);
+    } finally {
+      target.disabled = false;
     }
   }
 
@@ -3741,18 +3923,22 @@
   }
 
   function newSession(question) {
+    const draft = engine.getPracticeDraft(lab.state, question.id);
     return {
+      ...draft,
       questionId: question.id,
-      startedAt: Date.now(),
-      hintLevel: 0,
-      confidenceBefore: 3,
-      confidenceAfter: 3,
-      finalAnswer: "",
-      errorType: "",
-      reflection: "",
-      selfExplanation: "",
-      draftImageData: "",
-      draftImageName: "",
+      profileId: lab.state.activeProfileId,
+      startedAt: Date.now() - (Number(draft?.elapsedSeconds) || 0) * 1000,
+      restoredDraft: Boolean(draft),
+      hintLevel: draft?.hintLevel || 0,
+      confidenceBefore: draft?.confidenceBefore || 3,
+      confidenceAfter: draft?.confidenceAfter || 3,
+      finalAnswer: draft?.finalAnswer || "",
+      errorType: draft?.errorType || "",
+      reflection: draft?.reflection || "",
+      selfExplanation: draft?.selfExplanation || "",
+      draftImageData: draft?.draftImageData || "",
+      draftImageName: draft?.draftImageName || "",
       grading: null,
       model: {
         object: "",
@@ -3763,9 +3949,41 @@
         coordinates: "",
         forces: "",
         equations: "",
-        reasonableness: ""
+        reasonableness: "",
+        ...(draft?.model || {})
       }
     };
+  }
+
+  function queuePracticeDraft() {
+    if (lab.tab !== "tutor" || !lab.session || lab.savingAttempt) return;
+    clearTimeout(lab.draftTimer);
+    const status = document.getElementById("practiceDraftStatus");
+    if (status) status.textContent = "正在保存草稿…";
+    lab.draftTimer = setTimeout(() => { void persistPracticeDraft(); }, 600);
+  }
+
+  async function persistPracticeDraft() {
+    clearTimeout(lab.draftTimer);
+    if (!lab.session || lab.savingAttempt) return true;
+    captureSessionForm();
+    const question = getQuestion(lab.session.questionId);
+    if (!question) return true;
+    try {
+      engine.savePracticeDraft(lab.state, question, { ...lab.session,
+        elapsedSeconds: Math.round((Date.now() - lab.session.startedAt) / 1000) }, lab.session.profileId);
+      // Draft writes do not trigger expensive analytics re-renders on every key.
+      lab.state = engine.saveState(lab.state);
+      await engine.awaitLastSave();
+      const status = document.getElementById("practiceDraftStatus");
+      if (status) status.textContent = "草稿已保存在本机；尚未提交，不计学习证据。";
+      return true;
+    } catch (_) {
+      const status = document.getElementById("practiceDraftStatus");
+      if (status) status.textContent = "数据未保存，请勿关闭页面；释放空间后点保存草稿重试。";
+      showLabMessage("数据未保存，当前输入仍保留在页面。", true);
+      return false;
+    }
   }
 
   function captureSessionForm() {
@@ -4143,6 +4361,7 @@
   }
 
   async function completeAttempt() {
+    if (lab.savingAttempt) return;
     captureSessionForm();
     const question = getQuestion(lab.session?.questionId);
     if (!question || !lab.session?.grading) return;
@@ -4156,8 +4375,17 @@
       document.getElementById("labErrorType")?.focus();
       return;
     }
+    const before = JSON.parse(JSON.stringify(lab.state));
+    lab.savingAttempt = true;
+    clearTimeout(lab.draftTimer);
+    const inquiryId = lab.session.inquiryId || "";
     const durationSeconds = Math.round((Date.now() - lab.session.startedAt) / 1000);
-    const attempt = engine.recordAttempt(lab.state, {
+    let attempt;
+    let review;
+    try {
+    attempt = engine.recordAttempt(lab.state, {
+      question,
+      inquiryId,
       questionId: question.id,
       topic: question.topic,
       knowledgePointId: question.knowledgePointId || question.topicKey || "",
@@ -4188,21 +4416,30 @@
       activePlan.comparisonStatus = "insufficient";
       activePlan.updatedAt = new Date().toISOString();
     }
-    const review = engine.scheduleReviewFromAttempt(lab.state, question.id, attempt.id);
-    saveLearningState();
+    review = engine.scheduleReviewFromAttempt(lab.state, question.id, attempt.id);
+    engine.removePracticeDraft(lab.state, question.id);
+      if (inquiryId) window.PhysicsStudioTeachingSequences.linkInquiryAttempt(lab.state, inquiryId, attempt.id);
+      await saveLearningState();
+    } catch (error) {
+      lab.state = before;
+      lab.savingAttempt = false;
+      showLabMessage(`数据未保存：${error.message || "请释放存储空间后重试"}。当前作答仍保留，尚未完成本次学习。`, true);
+      return;
+    }
     if (attempt.grading.status === "incorrect" || attempt.grading.status === "partial") {
-      await lab.app?.updateQuestion?.(question.id, {
+      try { await lab.app?.updateQuestion?.(question.id, {
         wrong: true,
         wrongAt: new Date().toISOString(),
         wrongCount: (Number(question.wrongCount) || 0) + 1,
         mastered: false
-      });
+      }); } catch (_) { showLabMessage("学习作答已保存；题库的旧错题标记未更新，错题集仍以作答证据为准。", true); }
     }
     lab.lastCompleted = { title: question.title, review, attempt };
     lab.session = null;
-    lab.tab = "transfer";
+    lab.savingAttempt = false;
+    lab.tab = inquiryId ? "models" : "transfer";
     try {
-      await prepareVariantTraining(question, { allowAi: false, count: 3 });
+      if (!inquiryId) await prepareVariantTraining(question, { allowAi: false, count: 3 });
     } catch (error) {
       lab.variantGenerationStatus = "";
       console.warn("Variant preparation failed", error);

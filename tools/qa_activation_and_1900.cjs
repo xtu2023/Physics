@@ -101,7 +101,10 @@ assert.match(publicKeySource, /fingerprintSha256: "[A-F0-9]{64}"/);
 assert.doesNotMatch(publicKeySource, /PRIVATE KEY|privateKey|(?:^|[,{]\s*)(?:"d"|d)\s*:/m);
 assert.match(activationSource, /crypto\.subtle\.verify/);
 assert.match(activationSource, /该激活码绑定的是另一台设备/);
-assert.match(indexSource, /class="activation-pending"/);
+assert.doesNotMatch(indexSource, /class="activation-pending"/, "v4.3 must start without a license");
+assert.match(activationSource, /required: false/);
+assert.doesNotMatch(activationSource, /getNativeActivationAdapter|renderGate\(/,
+  "startup must not collect device IDs or display license controls");
 assert.match(indexSource, /activation-public-key\.js/);
 assert.match(indexSource, /original-practice-bank\.js/);
 

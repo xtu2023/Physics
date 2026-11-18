@@ -1,8 +1,8 @@
 {
-  "appVersion": "4.2.2",
+  "appVersion": "4.3.0",
   "stateVersion": 10,
   "reportFormatVersion": 4,
   "feedbackEmail": "luo865265@gmail.com",
-  "classroomClientVersion": "4.2.2",
-  "androidUserAgentVersion": "4.2.2"
+  "classroomClientVersion": "4.3.0",
+  "androidUserAgentVersion": "4.3.0"
 }

@@ -2,15 +2,15 @@
   "use strict";
 
   const root = globalThis;
-  const STORAGE_SCHEMA_VERSION = 5;
+  const STORAGE_SCHEMA_VERSION = 6;
   const DB_NAME = "physics-study-room-v2";
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
   const DEFAULT_LEARNING_KEY = "physics-learning-loop-v1";
   const ENTITY_STORES = Object.freeze([
     "profiles", "attempts", "diagnosticAttempts", "examRecords", "growthRecords",
     "importedReports", "experimentRecords", "assessmentSessions", "learningPlans",
     "assignments", "broadCoverageChecks", "temporaryLearningGroups",
-    "variantSets", "variantAttempts", "variantPresets", "feynmanExplanations"
+    "variantSets", "variantAttempts", "variantPresets", "feynmanExplanations", "practiceDrafts"
   ]);
   const cache = new Map();
   let writeQueue = Promise.resolve();

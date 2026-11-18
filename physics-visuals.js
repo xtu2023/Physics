@@ -250,6 +250,29 @@
     return { model: "uniform", ...kinematics(input) };
   }
 
+  function inclineMotion(input = {}) {
+    const mass = parameter(input.mass, 2, "mass", 0, true);
+    const angle = parameter(input.angle, 30, "angle", 0);
+    if (angle >= 90) throw new Error("斜面角度应小于90°。");
+    const mu = parameter(input.mu, 0.2, "mu", 0);
+    // When only one slider is available we explicitly use μs=μk. This is a
+    // simplified model, not a deduction of static friction from kinetic data.
+    const muStatic = parameter(input.muStatic, mu, "muStatic", mu);
+    const g = parameter(input.g, 9.8, "g", 0, true);
+    const t = parameter(input.t, 1, "t", 0);
+    const radians = angle * Math.PI / 180;
+    const normal = mass * g * Math.cos(radians);
+    const gravityAlong = mass * g * Math.sin(radians);
+    const staticLimit = muStatic * normal;
+    const resting = gravityAlong <= staticLimit + 1e-12;
+    const friction = resting ? gravityAlong : mu * normal;
+    const acceleration = resting ? 0 : (gravityAlong - friction) / mass;
+    return { model: "incline", mass, angle, mu, muStatic, g, t, normal, gravityAlong,
+      friction, staticLimit, acceleration, distance: 0.5 * acceleration * t * t,
+      speed: acceleration * t, regime: resting ? "static" : "sliding",
+      assumption: "固定斜面、质点从静止释放，静/动摩擦系数显式给定；界面单滑块时简化为μs=μk。" };
+  }
+
   function newtonSecondLaw(input = {}) {
     const mass = parameter(input.mass, 2, "mass", 0, true);
     const appliedForce = parameter(input.appliedForce, 10, "appliedForce");
@@ -415,6 +438,7 @@
     scatterFit,
     rayDiagram,
     uniformMotion,
+    inclineMotion,
     newtonSecondLaw,
     mechanicalEnergy,
     collision1D,

@@ -228,10 +228,114 @@
       return sequences['hs-uniformly-accelerated-motion'];
     return null;
   }
-  globalThis.PhysicsStudioTeachingSequences = Object.freeze({ version: 2,
+  const inquiries = Object.freeze({
+    uniform: Object.freeze({ title: "匀变速：速度为零时加速度是否为零", prompt: "物体初速度 +6 m/s，加速度 −2 m/s²。预测 t=3 s 的位置、速度和加速度，说明正方向与公式条件。",
+      params: Object.freeze({ x0: 0, v0: 6, a: -2, t: 3, duration: 5 }),
+      reflection: "比较预测与图像；解释 v=0 时 a 的含义。若加速度随时间变化，哪一步不能沿用？" }),
+    incline: Object.freeze({ title: "斜面：条件变化与摩擦模型", prompt: "物块从静止释放，θ=30°、m=2 kg、g=10 m/s²。本简化模型采用 μs=μk=0.2。预测是否滑动及 1 s 后速度，再预测增大摩擦系数的影响。",
+      params: Object.freeze({ mass: 2, angle: 30, mu: 0.2, g: 10, t: 1 }),
+      reflection: "指出实际静摩擦力何时小于 μsN。真实材料只给动摩擦系数时，能否直接判断起滑？" }),
+    circuit: Object.freeze({ title: "电路：控制变量与串联分压", prompt: "3 Ω 与 6 Ω 定值电阻串联接 9 V 理想电源，温度近似不变。预测总电流及两电阻电压；再设计一次只改变电源电压的比较。",
+      params: Object.freeze({ voltage: 9, r1: 3, r2: 6, mode: "series" }),
+      reflection: "用两组记录解释串联电流和电压的关系。若改为发热明显的灯丝，恒定电阻假设是否成立？" }),
+    wave: Object.freeze({ title: "机械波：频率变化与波长", prompt: "同一非色散介质中波速20 m/s、频率5 Hz。预测波长；保持波速不变把频率调为10 Hz，再预测波长。",
+      params: Object.freeze({ speed: 20, frequency: 5, amplitude: 1, t: 0 }),
+      reflection: "以 v=fλ 解释两组记录。波形传播时质点是否随波向前走？介质改变后能否继续固定波速？" })
+  });
+
+  function inquiryOutput(model, params) {
+    const visual = globalThis.PHYSICS_VISUALS;
+    const copy = (result, fields) => Object.fromEntries(fields.map((field) => [field, result[field]]));
+    if (model === "uniform") return copy(visual.uniformMotion(params), ["position", "velocity", "acceleration", "t"]);
+    if (model === "incline") return copy(visual.inclineMotion(params), ["normal", "friction", "staticLimit", "regime", "acceleration", "speed", "distance"]);
+    if (model === "circuit") return copy(visual.circuit({ voltage: params.voltage, resistances: [params.r1, params.r2], mode: params.mode }), ["totalResistance", "totalCurrent", "branchCurrents", "branchVoltages"]);
+    if (model === "wave") return copy(visual.waveModel({ ...params, time: params.t }), ["speed", "frequency", "wavelength", "period"]);
+    throw new Error("当前模型尚未配置探究任务。");
+  }
+
+  function inquiryRecord(state, id) {
+    const record = (state.experimentRecords || []).find((item) => item.id === id && item.type === "guided-inquiry"
+      && item.profileId === state.activeProfileId);
+    if (!record) throw new Error("未找到当前学生的探究记录。");
+    return record;
+  }
+
+  function beginInquiry(state, model, prediction, reason, sourceQuestionId = "") {
+    const task = inquiries[model];
+    if (!state.profiles?.some((profile) => profile.id === state.activeProfileId)) throw new Error("探究学生身份不存在，未保存。");
+    if (!task || !String(prediction || "").trim() || !String(reason || "").trim()) throw new Error("请先填写预测与依据，不能用观看动画代替作答。");
+    const record = { id: globalThis.PHYSICS_LEARNING_ENGINE.createId("inquiry"), type: "guided-inquiry",
+      profileId: state.activeProfileId, model, title: task.title, sourceQuestionId,
+      taskVersion: 1, prediction: String(prediction).trim().slice(0, 5000),
+      predictionReason: String(reason).trim().slice(0, 5000), predictionParams: { ...task.params },
+      observations: [], explanation: "", transferEvidenceIds: [], status: "predicted",
+      verificationStatus: "待教师复核", grading: { status: "review-required", score: null },
+      createdAt: new Date().toISOString(), evidenceBoundary: "理想模型探究记录；非实测，不自动计掌握或独立诊断证据。" };
+    state.experimentRecords = Array.isArray(state.experimentRecords) ? state.experimentRecords : [];
+    state.experimentRecords.push(record);
+    return record;
+  }
+
+  function observeInquiry(state, id, params) {
+    const record = inquiryRecord(state, id);
+    if (!["predicted", "observed"].includes(record.status)) throw new Error("本次探究已提交，请新建一次预测后再记录。");
+    if (record.observations.length >= 20) throw new Error("本次已记录20组参数，请先解释已有记录。");
+    const allowed = inquiries[record.model].params;
+    const savedParams = Object.fromEntries(Object.keys(allowed).map((key) => [key, params[key] ?? allowed[key]]));
+    const output = inquiryOutput(record.model, savedParams);
+    record.observations.push({ id: globalThis.PHYSICS_LEARNING_ENGINE.createId("observation"),
+      params: savedParams, output, observedAt: new Date().toISOString(), source: "ideal-simulation" });
+    record.status = "observed";
+    return record;
+  }
+
+  function explainInquiry(state, id, explanation) {
+    const record = inquiryRecord(state, id);
+    if (record.status !== "observed" || !record.observations.length) throw new Error("请先记录模型输出。");
+    if (!String(explanation || "").trim()) throw new Error("请用记录解释规律、适用条件及预测差异。");
+    record.explanation = String(explanation).trim().slice(0, 10000);
+    record.status = "awaiting-transfer";
+    record.submittedAt = new Date().toISOString();
+    return record;
+  }
+
+  function linkInquiryAttempt(state, id, attemptId) {
+    const record = inquiryRecord(state, id);
+    const attempt = state.attempts.find((item) => item.id === attemptId && item.profileId === record.profileId);
+    const createdAt = Date.parse(attempt?.createdAt);
+    const submittedAt = Date.parse(record.submittedAt);
+    if (!record.explanation || !attempt || attempt.questionId === record.sourceQuestionId
+      || !Number.isFinite(createdAt) || !Number.isFinite(submittedAt)
+      || createdAt < submittedAt) throw new Error("仅能关联解释后当前学生完成的另一道正式作答。");
+    record.transferEvidenceIds = [...new Set([...record.transferEvidenceIds, attempt.id])];
+    // This reference only links the trail. Existing independent-model/date/
+    // scoring gates decide whether it can be transfer or retention evidence.
+    record.status = "transfer-recorded";
+    return record;
+  }
+
+  // Qualitative teacher feedback is not a numerical score and never creates
+  // attempt/mastery evidence. The UI requires the local teacher lock; remote
+  // classroom reviews continue to require independent server authorization.
+  function reviewInquiry(state, id, review) {
+    const record = state.experimentRecords?.find((item) => item.id === id && item.type === "guided-inquiry");
+    if (!record?.explanation || !state.profiles?.some((profile) => profile.id === record.profileId)) throw new Error("没有可复核的探究解释。");
+    if (!["checked", "needs-revision"].includes(review?.decision) || !String(review?.comment || "").trim()) throw new Error("请选择结论并填写证据与改进要求。");
+    if (Number(review.expectedRevision) !== Number(record.reviewRevision || 0)) throw new Error("探究反馈已变更，请刷新后核对。");
+    const previous = record.teacherFeedback || null;
+    record.reviewRevision = Number(record.reviewRevision || 0) + 1;
+    record.teacherFeedback = { decision: review.decision, comment: String(review.comment).trim().slice(0, 1000),
+      reviewedAt: new Date().toISOString(), reviewedBy: "本机教师", revision: record.reviewRevision };
+    record.verificationStatus = review.decision === "checked" ? "教师已核对科学表述" : "需按教师反馈补充探究";
+    record.reviewHistory = [...(record.reviewHistory || []), { previous, next: { ...record.teacherFeedback } }];
+    return record;
+  }
+
+  globalThis.PhysicsStudioTeachingSequences = Object.freeze({ version: 3,
     get: (knowledgePointId) => sequences[String(knowledgePointId || '')] || null,
     forQuestion,
     list: () => Object.values(sequences),
     remediationFor: (code) => remediations[String(code || '')] || null,
-    remediations: () => remediations });
+    remediations: () => remediations,
+    inquiries, inquiryOutput, beginInquiry, observeInquiry, explainInquiry, linkInquiryAttempt, reviewInquiry });
 })();

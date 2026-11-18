@@ -199,6 +199,8 @@ assert.ok(playModelStart > saveTransferStart,
   "saveTransferRecord must remain inspectable");
 const completeAttemptSource = labSource.slice(completeAttemptStart, saveTransferStart);
 const saveTransferSource = labSource.slice(saveTransferStart, playModelStart);
+const completedNavigationIndex = completeAttemptSource.indexOf('lab.tab = inquiryId ? "models" : "transfer"');
+assert.ok(completedNavigationIndex > 0, "completed practice must enter transfer, or return to its linked inquiry");
 assert.match(
   completeAttemptSource,
   /scheduleReviewFromAttempt\(lab\.state, question\.id, attempt\.id\)/,
@@ -211,14 +213,14 @@ assert.ok(
 );
 assert.ok(
   completeAttemptSource.indexOf("engine.scheduleReviewFromAttempt")
-    < completeAttemptSource.indexOf('lab.tab = "transfer"'),
+    < completedNavigationIndex,
   "review scheduling must happen before entering the transfer page"
 );
 const reviewScheduleIndex = completeAttemptSource.indexOf("engine.scheduleReviewFromAttempt");
 const reviewSaveIndex = completeAttemptSource.indexOf("saveLearningState()", reviewScheduleIndex);
 assert.ok(
   reviewSaveIndex > reviewScheduleIndex
-    && reviewSaveIndex < completeAttemptSource.indexOf('lab.tab = "transfer"'),
+    && reviewSaveIndex < completedNavigationIndex,
   "the newly scheduled review must be saved before entering the transfer page"
 );
 assert.doesNotMatch(

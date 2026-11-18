@@ -72,6 +72,8 @@ const reviewLines = [
   `- 待人工评分：${summary.pendingManualScoring}`, '',
   `- 高二已纠正并按模型匹配到必修第三册：${rows.filter((row) => row.grade === '高二' && ['h2-original-template-000', 'h2-original-template-001', 'h2-original-template-002', 'h2-original-template-003', 'h2-original-template-004'].includes(row.modelDefinitionId) && row.curriculumReviewStatus === 'catalog-exact').length} 道`,
   '- 高一匀变速运动 4 道多表征草稿及其评分量规仍须教师审核，未进入正式题库。',
+  '- v4.3.0：密度切块题 5 道新修订需教师抽检；原题ID不变，历史题面保留。',
+  '- 匀变速、斜面、电路、机械波 4 类理想模型探究需教师核对预测、变量、解释和迁移选题；模型输出不是实测，不自动计入掌握。',
   '- 本清单只表示目录匹配与评分方式；题目难度、教学成效及教材适配不据此自动审定。', '',
   '| 题库 | 年级 | 模型/知识点 | 数量 | 示例题 ID | 原因 |',
   '| --- | --- | --- | ---: | --- | --- |',

@@ -210,8 +210,8 @@ if ($Edition -ne 'legacy') {
         [Text.RegularExpressions.RegexOptions]::Singleline
     )
     $AndroidIndex = $AndroidIndex.Replace(
-        '<body class="activation-pending">',
-        "<body class=`"activation-pending`" data-edition=`"$Edition`">"
+        '<body>',
+        "<body data-edition=`"$Edition`">"
     )
 }
 if ($Edition -eq 'student') {

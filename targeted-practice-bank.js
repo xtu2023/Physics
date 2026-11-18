@@ -2,7 +2,7 @@
   "use strict";
 
   const VERSION = 1;
-  const CONTENT_VERSION = "2026.07.30-targeted-transfer-400-r1";
+  const CONTENT_VERSION = "2026.11.18-targeted-transfer-400-r2";
   const CREATED_AT = "2026-07-30T00:00:00.000Z";
   const ROUNDS_PER_MODEL = 5;
   const VARIANTS = Object.freeze([
@@ -28,6 +28,27 @@
     ].join("\n");
   }
 
+  // Cutting changes m and V by the same factor, at unchanged temperature and
+  // material state. The same parameter must drive every sentence, not just
+  // the numeric answer. Exported for boundary/parameter regression testing.
+  function densityCutPayload(parts) {
+    if (!Number.isSafeInteger(parts) || parts < 2 || parts > 1000) {
+      throw new Error("切块数须为 2 到 1000 的整数。");
+    }
+    return {
+      contentRevision: 2,
+      modelParams: { parts },
+      content: `把一块均匀实心材料切成质量相等的 ${parts} 块，材料的温度和状态保持不变，忽略切割损耗。有人认为每一块的质量变为原来的1/${parts}，所以密度也变为原来的1/${parts}。判断该说法是否正确，并说明理由。`,
+      steps: [
+        "密度是物质单位体积的质量；同种均匀材料在温度和状态不变时密度不变。",
+        `切开后每块质量 m'=m/${parts}，体积 V'=V/${parts}，二者都变为原来的1/${parts}。`,
+        `ρ'=m'/V'=(m/${parts})/(V/${parts})=m/V=ρ；分子、分母同比例变化，比值不变。`
+      ],
+      answer: `说法错误；${parts} 块材料中每一块的密度均与切开前相同。`,
+      check: "块数增加只改变每块质量和体积；不能推断同种材料的密度趋近于零。该结论以材料均匀且状态不变为前提。"
+    };
+  }
+
   function buildQuestion(grade, familyNumber, model, variant, payload) {
     const gradeCode = grade === "九年级" ? "g9" : "h3";
     const stage = grade === "九年级" ? "初中" : "高中";
@@ -45,6 +66,9 @@
       content: payload.content,
       solution: detailedSolution(examPoints, payload.steps, answer, payload.check),
       answer,
+      contentRevision: payload.contentRevision || 1,
+      contentVersion: CONTENT_VERSION,
+      ...(payload.modelParams ? { modelParams: { ...payload.modelParams } } : {}),
       examPoints,
       modelFamilyId: familyId,
       modelDefinitionId: familyId,
@@ -139,16 +163,7 @@
             check: "同一瓶子两次装满，体积相同；液体质量小于等体积水的质量，因此密度应小于1.0 g/cm³。"
           };
         }
-        return {
-          content: `把一块均匀实心材料切成质量相等的 ${r + 1} 块。有人认为每一块的质量变为原来的1/${r + 1}，所以密度也变为原来的1/${r + 1}。判断该说法是否正确，并说明理由。`,
-          steps: [
-            "密度是物质单位体积的质量，均匀材料的密度由材料种类和状态决定。",
-            "切开后每一块的质量和体积都减半。",
-            "由 ρ=m/V 可知分子、分母同比例变化，比值不变。"
-          ],
-          answer: "说法错误；两块材料的密度均与切开前相同。",
-          check: "用极端情况检验：继续切成更小颗粒不会使同种材料密度趋近于零。"
-        };
+        return densityCutPayload(r + 1);
       }
     },
     {
@@ -1517,6 +1532,7 @@
     targetGrades: TARGET_GRADES,
     requiredTransferRoles: REQUIRED_TRANSFER_ROLES,
     coverageReport,
+    densityCutPayload,
     manifest: Object.freeze({
       generatedCount: questions.length,
       byGrade: Object.freeze({ "九年级": 200, "高三": 200 }),

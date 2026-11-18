@@ -10,6 +10,7 @@ const scripts = [
   "qa_curriculum_mapping.cjs",
   "qa_content_remediation.cjs",
   "qa_content_quality_v422.cjs",
+  "qa_content_access_v430.cjs",
   "qa_backup_validator_fields.cjs",
   "qa_classroom_client.cjs",
   "qa_class_invite_join.cjs",

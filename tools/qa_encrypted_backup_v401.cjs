@@ -18,10 +18,17 @@ context.PhysicsStudioSecurity = {
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.resolve(__dirname, "..", "backup.js"), "utf8"), context);
 const backup = context.PhysicsStudioBackup;
-const state = { version: 10, profiles: [{ id: "student-default" }], attempts: [{ id: "a1", profileId: "student-default" }] };
+const state = { version: 10, profiles: [{ id: "student-default" }],
+  attempts: [{ id: "a1", profileId: "student-default", questionRevision: 1,
+    gradingHistory: [{ revision: 1, previous: { status: "review-required", score: null }, next: { status: "correct", score: 1 } }] }],
+  practiceDrafts: [{ id: "student-default::q1", profileId: "student-default", questionId: "q1", finalAnswer: "未提交" }],
+  experimentRecords: [{ id: "inquiry-1", type: "guided-inquiry", profileId: "student-default", prediction: "原始预测", observations: [] }] };
 const questions = [{
   id: "q1", title: "测试题", content: "小车运动", answer: "2 m/s",
   solution: "由速度公式计算", attachments: [], videoBlob: null,
+  contentRevision: 2, contentVersion: "test-r2", previousContentRevisions: [
+    { revision: 1, content: "旧题干", solution: "旧解析", answer: "旧答案", archivedAt: new Date().toISOString() }
+  ],
   curriculumVersion: "pep-2024", curriculumSectionIds: ["pep-high-1-2"],
   curriculumReviewStatus: "catalog-exact", mappingReason: "教材目录精确对应",
   answerSchema: {
@@ -40,6 +47,8 @@ const app = {
     assert.equal(JSON.stringify(nextQuestions[0].curriculumSectionIds), JSON.stringify(questions[0].curriculumSectionIds));
     assert.equal(nextQuestions[0].curriculumReviewStatus, questions[0].curriculumReviewStatus);
     assert.equal(nextState.attempts[0].id, "a1");
+    assert.equal(JSON.stringify(nextState), JSON.stringify(state), "all drafts, inquiry records and review history must survive backup");
+    assert.equal(JSON.stringify(nextQuestions[0].previousContentRevisions), JSON.stringify(questions[0].previousContentRevisions));
     return { restored: nextQuestions.length };
   }
 };

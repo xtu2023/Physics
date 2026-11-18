@@ -74,7 +74,7 @@
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 60 },
         "kind": { "const": "quantity" },
-        "quantity": { "enum": ["density", "acceleration", "speed", "area", "volume", "pressure", "energy", "power", "current", "length", "mass", "time", "frequency", "force", "voltage", "resistance"] },
+        "quantity": { "enum": ["density", "acceleration", "speed", "area", "volume", "pressure", "energy", "power", "current", "length", "mass", "time", "frequency", "force", "voltage", "resistance", "charge", "magneticField", "magneticFlux", "capacitance", "electricField", "momentum", "angularSpeed", "temperatureKelvin", "temperatureCelsius", "amount"] },
         "expected": {
           "type": "object", "additionalProperties": false,
           "required": ["value", "unit"],
@@ -93,7 +93,7 @@
         },
         "unitRequired": { "type": "boolean" },
         "directionRequired": { "type": "boolean" },
-        "expectedDirection": { "enum": ["right", "left", "up", "down"] }
+        "expectedDirection": { "enum": ["right", "left", "up", "down", "incline-up", "incline-down", "into-page", "out-of-page", "clockwise", "counterclockwise"] }
       }
     },
     "question": {
@@ -161,6 +161,25 @@
         "autoScorable": { "type": "boolean" },
         "answerSchema": { "$ref": "#/$defs/answerSchema" },
         "answerSchemaReviewStatus": { "$ref": "#/$defs/shortString" },
+        "contentRevision": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "contentVersion": { "$ref": "#/$defs/shortString" },
+        "contentHash": { "$ref": "#/$defs/shortString" },
+        "modelParams": { "type": "object", "maxProperties": 30, "additionalProperties": { "type": "number" } },
+        "previousContentRevisions": {
+          "type": "array", "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["revision", "content", "solution", "answer", "archivedAt"],
+            "properties": {
+              "revision": { "type": "integer", "minimum": 1 },
+              "contentVersion": { "$ref": "#/$defs/shortString" },
+              "content": { "type": "string", "maxLength": 60000 },
+              "solution": { "type": "string", "maxLength": 60000 },
+              "answer": { "type": "string", "maxLength": 30000 },
+              "archivedAt": { "type": "string", "maxLength": 40 }
+            }
+          }
+        },
         "curriculumVersion": { "$ref": "#/$defs/shortString" },
         "curriculumSectionIds": { "$ref": "#/$defs/stringArray" },
         "curriculumReviewStatus": { "$ref": "#/$defs/shortString" },

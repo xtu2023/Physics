@@ -2049,7 +2049,7 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "4.2.2",
+    version: "4.3.0",
     configure,
     status,
     checkHealth,

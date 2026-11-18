@@ -113,6 +113,14 @@
       knowledgePointId };
   }
 
-  window.PHYSICS_CURRICULUM_MAPPING = Object.freeze({ version: 1, resolve,
+  function editionStatus(edition) {
+    const pep = /人教|人民教育|^pep$/iu.test(String(edition || ""));
+    return { mapped: pep, edition: String(edition || "未选择教材"),
+      message: pep
+        ? "当前目录为人教版参考结构；有明确节 ID 的题目才标为精确映射。请对照实际用书的版次、目录核验。"
+        : "通用知识点，未完成该版教材映射。下方使用人教版参考目录，不代表所选教材的章节、页码或教学进度。" };
+  }
+
+  window.PHYSICS_CURRICULUM_MAPPING = Object.freeze({ version: 2, resolve, editionStatus,
     sectionExists: (id) => byId.has(id) });
 })();

@@ -15,7 +15,7 @@ const accessToken = `access.${"x".repeat(100)}`;
 const refreshToken = `r1.44444444-4444-4444-8444-444444444444.${"a".repeat(43)}`;
 const ownerCapability = `oc1.${"o".repeat(43)}`;
 const ownerUserId = "99999999-9999-4999-8999-999999999999";
-const sharedWork = { assignments: [], submissions: [], reviews: [] };
+const sharedWork = { assignments: [], submissions: [], reviews: [], studentReceiptFailure: false };
 const shellSource = fs.readFileSync(path.join(project, "experience-shell.js"), "utf8");
 assert.match(shellSource, /classSubmissionsLoaded/);
 assert.match(shellSource, /提交记录读取失败，当前不计算均分、未交人数或知识点表现/);
@@ -202,6 +202,7 @@ async function installServerMock(page, role, calls) {
       return json(route, 200, { items: sharedWork.submissions });
     }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignment-submissions/me` && method === "GET") {
+      if (sharedWork.studentReceiptFailure) return json(route, 503, { code: "unavailable", message: "Receipt unavailable" });
       return json(route, 200, { items: sharedWork.submissions });
     }
     if (url.pathname === `/v1/assignments/44444444-4444-4444-8444-444444444444/submissions` && method === "POST") {
@@ -502,8 +503,20 @@ async function login(page, loginName) {
     await student.page.getByText("逐题作答已由服务端确认，等待教师批改。", { exact: true }).waitFor();
     assert.equal(sharedWork.submissions.length, 1);
     assert.equal(sharedWork.submissions[0].answers.length, 3);
+    sharedWork.studentReceiptFailure = true;
+    await student.page.locator('[data-classroom-action="refresh"]').first().click();
+    await student.page.locator('[data-student-receipt-error]').waitFor();
+    assert.match(await student.page.locator('.student-assignment-detail').innerText(), /不判断是否已提交/);
+    await student.page.getByText('提交与订正历史（1 次）', { exact: true }).click();
+    assert.match(await student.page.locator('.assignment-history').first().innerText(), /合力改变速度/);
+    assert.equal(await student.page.getByRole('button', { name: '开始作答', exact: true }).count(), 0);
+    assert.equal(sharedWork.submissions.length, 1, "failed receipt fetch must not create a new submission");
+    sharedWork.studentReceiptFailure = false;
+    await student.page.locator('[data-classroom-action="refresh"]').first().click();
+    await student.page.locator('[data-student-receipt-error]').waitFor({ state: 'detached' });
     await teacher.page.setViewportSize({ width: 1440, height: 960 });
     await teacher.page.locator('[data-classroom-action="refresh"]').click();
+    await teacher.page.getByText("班级数据已刷新。", { exact: true }).waitFor();
     const analyticsBeforeReview = teacher.page.locator('[data-classroom-analytics]');
     await analyticsBeforeReview.waitFor({ timeout: 6_000 });
     const analyticsBeforeReviewText = await analyticsBeforeReview.innerText();
@@ -553,8 +566,9 @@ async function login(page, loginName) {
     assert.ok(mobileFit.scrollWidth <= mobileFit.clientWidth + 1, JSON.stringify(mobileFit));
     assert.ok(mobileFit.scrollHeight >= mobileFit.clientHeight, JSON.stringify(mobileFit));
     await student.page.screenshot({ path: path.join(outputDirectory, "student-join.png"), fullPage: false });
-    if (student.errors.length) console.error("student page errors", student.errors, studentCalls.map((call) => `${call.method} ${call.path}`));
-    assert.deepEqual(student.errors, []);
+    assert.deepEqual(student.errors, [
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    ], "only the deliberately injected receipt HTTP 503 may be logged; no script errors are allowed");
     await studentContext.close();
     await teacherContext.close();
 

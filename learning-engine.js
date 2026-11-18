@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "4.2.2",
+    appVersion: "4.3.0",
     stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.2");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.3.0");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
@@ -1260,6 +1260,10 @@
     const knowledgePointId = String(topicKeyForQuestion(attempt) || attempt.knowledgePointId || "").trim();
     return {
       ...attempt,
+      questionRevision: Number.isSafeInteger(attempt.questionRevision) && attempt.questionRevision > 0
+        ? attempt.questionRevision : null,
+      questionRevisionStatus: Number.isSafeInteger(attempt.questionRevision) && attempt.questionRevision > 0
+        ? "recorded" : "legacy-unversioned",
       knowledgePointId,
       modelDefinitionId: String(attempt.modelDefinitionId || attempt.modelFamilyId || "").trim(),
       independenceGroupId: String(attempt.independenceGroupId || attempt.modelDefinitionId || attempt.modelFamilyId || "").trim(),
@@ -1547,6 +1551,7 @@
       variantAttempts: [],
       variantPresets: [],
       feynmanExplanations: [],
+      practiceDrafts: [],
       settings: {
         dailyGoal: 5,
         preferredStage: "全部",
@@ -1679,6 +1684,8 @@
         : [],
       contentReviews: migrated.contentReviews && typeof migrated.contentReviews === "object" ? migrated.contentReviews : {},
       experimentRecords: Array.isArray(migrated.experimentRecords) ? migrated.experimentRecords : [],
+      practiceDrafts: Array.isArray(migrated.practiceDrafts)
+        ? migrated.practiceDrafts.filter((item) => item?.id && item.profileId && item.questionId) : [],
       temporaryLearningGroups: Array.isArray(migrated.temporaryLearningGroups)
         ? migrated.temporaryLearningGroups.slice(-500)
         : [],
@@ -2288,6 +2295,10 @@
       } : question.answerSchema ? gradeStructuredAnswer(question, structuredResponse) : gradeFinalAnswerLegacy(question, response)),
       gradingVersion: GRADING_VERSION,
       questionContentVersion: question.questionContentVersion || question.contentVersion || null,
+      questionRevision: Number(question.contentRevision) || 1,
+      questionSnapshot: { id: question.id, title: String(question.title || ""),
+        content: String(question.content || ""), solution: String(question.solution || ""),
+        answer: String(question.answer || ""), questionType: String(question.questionType || "") },
       answerSchemaVersion: question.answerSchema?.answerSchemaVersion || null,
       rawResponse: typeof response === "string" ? response : JSON.parse(JSON.stringify(response ?? null))
     };
@@ -2699,12 +2710,21 @@
       id: createId("attempt"),
       profileId: state.activeProfileId,
       questionId: input.questionId,
+      questionRevision: input.question?.contentRevision || input.grading?.questionRevision || null,
+      questionRevisionStatus: input.question?.contentRevision || input.grading?.questionRevision
+        ? "recorded" : "legacy-unversioned",
+      questionSnapshot: input.grading?.questionSnapshot || (input.question ? {
+        id: input.question.id, title: String(input.question.title || ""),
+        content: String(input.question.content || ""), solution: String(input.question.solution || ""),
+        answer: String(input.question.answer || ""), questionType: String(input.question.questionType || "")
+      } : null),
       knowledgePointId: String(input.knowledgePointId || input.question?.knowledgePointId
         || input.topicKey || topicKeyForQuestion(input.question || { topic: input.topic }) || "").slice(0, 200),
       topicKey: String(input.knowledgePointId || input.question?.knowledgePointId
         || input.topicKey || topicKeyForQuestion(input.question || { topic: input.topic }) || "").slice(0, 200),
       topic: input.topic || "待分类",
-      questionType: normalizeQuestionType(input.questionType || input.examQuestionType),
+      questionType: normalizeQuestionType(input.questionType || input.question?.questionType || input.examQuestionType),
+      difficulty: String(input.difficulty || input.question?.difficulty || ""),
       modelDefinitionId: String(input.modelDefinitionId || input.question?.modelDefinitionId
         || input.modelFamilyId || input.question?.modelFamilyId || "").slice(0, 200),
       modelFamilyId: String(input.modelFamilyId || input.question?.modelFamilyId
@@ -2720,6 +2740,7 @@
       confidenceAfter: Math.max(1, Math.min(5, Number(input.confidenceAfter) || 1)),
       hintLevel: Math.max(0, Math.min(5, Number(input.hintLevel) || 0)),
       finalAnswer: String(input.finalAnswer || ""),
+      inquiryId: String(input.inquiryId || "").slice(0, 240),
       grading: input.grading || { status: "review-required", score: null, issues: [] },
       errorType: normalizedErrorType,
       errorTypeCode: normalizedErrorType ? errorTypeCode(normalizedErrorType) : "",
@@ -2962,10 +2983,51 @@
     return normalized;
   }
 
+  // Drafts are separate from attempts: neither typing nor resuming a draft is
+  // completion, accuracy or mastery evidence. The optional v10 field migrates
+  // additively to its own IndexedDB store and is included in full backups.
+  function savePracticeDraft(state, question, session, profileId = state.activeProfileId) {
+    if (!state.profiles.some((profile) => profile.id === profileId)) throw new Error("草稿学生身份不存在，未保存。");
+    if (!question?.id || question.id !== session?.questionId) throw new Error("草稿题目不一致，未保存。");
+    const id = `${profileId}::${question.id}`;
+    const model = Object.fromEntries(["object", "known", "unknown", "process", "assumptions", "coordinates", "forces", "equations", "reasonableness"]
+      .map((key) => [key, String(session.model?.[key] || "").slice(0, 10000)]));
+    const value = { id, profileId, questionId: question.id,
+      questionRevision: Number(question.contentRevision) || 1,
+      savedAt: new Date().toISOString(), status: "draft", model,
+      finalAnswer: String(session.finalAnswer || "").slice(0, 30000),
+      selfExplanation: String(session.selfExplanation || "").slice(0, 30000),
+      reflection: String(session.reflection || "").slice(0, 10000),
+      errorType: normalizeErrorType(session.errorType),
+      hintLevel: Math.max(0, Math.min(5, Number(session.hintLevel) || 0)),
+      confidenceBefore: Math.max(1, Math.min(5, Number(session.confidenceBefore) || 3)),
+      confidenceAfter: Math.max(1, Math.min(5, Number(session.confidenceAfter) || 3)),
+      elapsedSeconds: Math.max(0, Number(session.elapsedSeconds) || 0),
+      originalStartedAt: String(session.originalStartedAt || new Date(session.startedAt || Date.now()).toISOString()),
+      inquiryId: String(session.inquiryId || "").slice(0, 240),
+      draftImageData: /^data:image\//.test(String(session.draftImageData || "")) && String(session.draftImageData).length <= 900000 ? session.draftImageData : "",
+      draftImageName: String(session.draftImageName || "").slice(0, 120) };
+    state.practiceDrafts = (state.practiceDrafts || []).filter((item) => item.id !== id);
+    state.practiceDrafts.push(value);
+    return value;
+  }
+
+  function getPracticeDraft(state, questionId, profileId = state.activeProfileId) {
+    const value = (state.practiceDrafts || []).find((item) => item.profileId === profileId && item.questionId === questionId);
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  }
+
+  function removePracticeDraft(state, questionId, profileId = state.activeProfileId) {
+    state.practiceDrafts = (state.practiceDrafts || []).filter((item) => item.profileId !== profileId || item.questionId !== questionId);
+  }
+
   function completeManualReview(state, attemptId, review = {}) {
     const attempt = state.attempts.find((item) => item.id === attemptId);
-    if (!attempt || !isPendingManualReview(attempt)) {
+    if (!attempt || (!isPendingManualReview(attempt) && review.allowRevision !== true)) {
       throw new Error("未找到待人工复核的作答记录。");
+    }
+    if (review.expectedRevision != null && Number(review.expectedRevision) !== Number(attempt.reviewRevision || 0)) {
+      throw new Error("这份作答已被重新批阅，请刷新后核对，未覆盖新结果。");
     }
     const status = ["correct", "incorrect", "partial"].includes(String(review.status))
       ? String(review.status)
@@ -2974,6 +3036,11 @@
     if (!Number.isFinite(score) || score < 0 || score > 1) {
       throw new Error("人工复核得分必须在0到1之间。");
     }
+    if ((status === "correct" && score !== 1) || (status === "incorrect" && score !== 0)
+      || (status === "partial" && (score <= 0 || score >= 1))) {
+      throw new Error("复核等级与分值不一致。");
+    }
+    const previous = JSON.parse(JSON.stringify(attempt.grading));
     attempt.grading = {
       ...attempt.grading,
       status,
@@ -2985,6 +3052,11 @@
       manualReview: true
     };
     if (attempt.grading.legacyReview) attempt.grading.legacyReview = { ...attempt.grading.legacyReview, status: "reviewed" };
+    attempt.reviewRevision = Number(attempt.reviewRevision || 0) + 1;
+    attempt.gradingHistory = Array.isArray(attempt.gradingHistory) ? attempt.gradingHistory : [];
+    attempt.gradingHistory.push({ id: createId("review"), type: "teacher-review",
+      revision: attempt.reviewRevision, previous, next: JSON.parse(JSON.stringify(attempt.grading)),
+      reviewedAt: attempt.grading.reviewedAt, reviewedBy: attempt.grading.reviewedBy });
     attempt.teacherReviewStatus = "completed";
     attempt.updatedAt = new Date().toISOString();
     (state.assessmentSessions || [])
@@ -2992,6 +3064,30 @@
         && session.profileId === attempt.profileId
         && session.status === "needs-review"
         && (session.questionIds || []).includes(attempt.questionId))
+      .forEach((session) => refreshPlacementAssessment(state, session.id));
+    return attempt;
+  }
+
+  function undoManualReview(state, attemptId, expectedRevision, reason) {
+    const attempt = state.attempts.find((item) => item.id === attemptId);
+    const last = attempt?.gradingHistory?.at(-1);
+    if (!last || last.type !== "teacher-review" || !String(reason || "").trim()) {
+      throw new Error("没有可撤销的最近复核，或尚未填写撤销原因。");
+    }
+    if (Number(expectedRevision) !== Number(attempt.reviewRevision)) {
+      throw new Error("复核版本已变化，请刷新后重试。");
+    }
+    const previous = JSON.parse(JSON.stringify(attempt.grading));
+    attempt.grading = JSON.parse(JSON.stringify(last.previous));
+    attempt.reviewRevision += 1;
+    attempt.updatedAt = new Date().toISOString();
+    attempt.teacherReviewStatus = isPendingManualReview(attempt) ? "pending" : "completed";
+    attempt.gradingHistory.push({ id: createId("review-undo"), type: "undo",
+      undoOf: last.id, revision: attempt.reviewRevision, previous,
+      next: JSON.parse(JSON.stringify(attempt.grading)), reviewedAt: attempt.updatedAt,
+      reviewedBy: "本机教师", reason: String(reason).trim().slice(0, 500) });
+    (state.assessmentSessions || []).filter((session) => session.type === "placement"
+      && session.profileId === attempt.profileId && (session.questionIds || []).includes(attempt.questionId))
       .forEach((session) => refreshPlacementAssessment(state, session.id));
     return attempt;
   }
@@ -6521,6 +6617,9 @@
     verifyPhysicsAnswer,
     scoreModeling,
     recordAttempt,
+    savePracticeDraft,
+    getPracticeDraft,
+    removePracticeDraft,
     normalizeVariantSet,
     normalizeVariantAttempt,
     normalizeFeynmanExplanation,
@@ -6535,6 +6634,7 @@
     trainableVariants,
     saveVariantPreset,
     completeManualReview,
+    undoManualReview,
     automaticReviewRating,
     scheduleReview,
     scheduleReviewFromAttempt,

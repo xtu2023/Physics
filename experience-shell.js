@@ -89,6 +89,9 @@
       lastInvite: null,
       assignments: [],
       assignmentSubmissions: {},
+      studentSubmissionsLoaded: false,
+      studentSubmissionScope: "",
+      studentSubmissionsConfirmedAt: "",
       classSubmissions: [],
       classSubmissionsLoaded: false,
       activeAssignmentId: "",
@@ -459,7 +462,8 @@
 
   async function ensureTeacherUnlocked() {
     const lock = window.PhysicsStudioTeacherLock;
-    if (!lock || lock.isUnlocked()) return true;
+    if (!lock) return false;
+    if (lock.isUnlocked()) return true;
     if (!lock.hasPin()) {
       const first = window.prompt("首次进入教师管理，请设置6至12位数字PIN（不会明文保存）");
       if (first == null) return false;
@@ -476,10 +480,17 @@
         return false;
       }
     }
-    const pin = window.prompt("请输入教师PIN以解锁管理功能");
+    const retryAfter = lock.status()?.retryAfterSeconds || 0;
+    if (retryAfter > 0) {
+      window.alert(`连续 PIN 错误，请 ${retryAfter} 秒后重试。此锁仅保护本机，不能代替班级服务端授权。`);
+      return false;
+    }
+    const pin = window.prompt("请输入教师PIN以解锁本机管理功能（不是软件激活码）");
     if (pin == null) return false;
     const ok = await lock.unlock(pin);
-    if (!ok) window.alert("PIN错误，教师管理功能保持锁定。");
+    if (!ok) window.alert(lock.status()?.retryAfterSeconds > 0
+      ? `PIN错误，请 ${lock.status().retryAfterSeconds} 秒后重试。`
+      : "PIN错误，教师管理功能保持锁定。");
     return ok;
   }
 
@@ -914,7 +925,7 @@
     const metrics = {
       library: `${data.gradeQuestions.length} 道`,
       wrong: `${data.wrongQuestions.length} 道`,
-      videos: data.videoQuestions.length ? `${data.videoQuestions.length} 个视频` : `${data.gradeQuestions.length} 个动态讲解`,
+      videos: data.videoQuestions.length ? `${data.videoQuestions.length} 个关联视频` : "暂无视频 · 可读分步解析",
       mastered: `${data.masteredQuestions.length} 道`,
       progress: `${evidenced}/${denominator}`,
       curriculum: `${data.curriculumBooks.length} 册 · ${data.curriculumSectionCount} 节`,
@@ -951,7 +962,7 @@
     return `
       <section class="student-page-head module-page-head">
         <button class="module-back-button" data-student-view="${backView}" type="button">← 返回${backView === "profile" ? "我的" : backView === "analysis" ? "学情" : "训练"}</button>
-        <span>${escapeHtml(kicker)}</span>
+        <span>${escapeHtml(/[A-Za-z]/.test(kicker) ? "物理学习 · 本机资料" : kicker)}</span>
         <h1>${escapeHtml(title)}</h1>
         <p>${escapeHtml(description)}</p>
       </section>`;
@@ -1293,6 +1304,7 @@
           <p class="question-excerpt">${escapeHtml(shortText(question.content, options.compact ? 80 : 150))}</p>
           <div class="question-point-row">
             <strong>${escapeHtml(question.topic)}</strong>
+            <span>${escapeHtml(question.originalExercise ? "应用内原创练习（非学校真题）" : question.source || "来源待核对")}</span>
             ${(question.examPoints || []).slice(0, 3).map((point) => `<span>${escapeHtml(point)}</span>`).join("")}
             ${actualVideo ? "<span class=\"actual-video-badge\">已关联视频</span>" : "<span>可动态分步讲解</span>"}
           </div>
@@ -1501,10 +1513,10 @@
       .filter((question) => !query || questionSearchText(question).includes(query))
       .slice(0, 30);
     return `
-      ${renderModuleHeader("METHOD & VIDEO", "方法视频与动态讲解", "真实视频按题目附件播放；没有视频的题目提供基于已审核解析的逐步动态讲解，并明确区分两者。")}
+      ${renderModuleHeader("方法与解析", "方法视频与分步解析", "视频仅来自教师或用户实际关联的资源；文字解析逐步显示不等于视频，也不表示已完成独立教师学科审核。")}
       <section class="method-boundary">
-        <article><strong>${actual.length}</strong><span>已关联真实视频</span><small>只统计本地文件或有效 HTTP(S) 地址</small></article>
-        <article><strong>${questions.length}</strong><span>动态分步讲解</span><small>逐条播放题目现有解析，不生成虚构视频</small></article>
+        <article><strong>${actual.length}</strong><span>已关联视频资源</span><small>本地文件或 HTTP(S) 地址；外链可用性以实际播放为准</small></article>
+        <article><strong>${questions.length}</strong><span>题目分步解析</span><small>逐条显示现有文字解析，不计为视频</small></article>
       </section>
       <section class="method-filter-panel">
         <label><span>年级</span><select id="studentMethodGrade">${["全部", "八年级", "九年级", "高一", "高二", "高三"].map((item) => `<option${item === grade ? " selected" : ""}>${item}</option>`).join("")}</select></label>
@@ -1522,8 +1534,8 @@
           </div>
         </section>` : `
         <section class="method-no-video">
-          <strong>当前${escapeHtml(grade)}题库没有已审核的视频附件</strong>
-          <p>系统不会用无关网络视频填充。教师可在题目编辑页关联已获授权的视频；下方  ${questions.length} 道题仍可使用逐步动态讲解。</p>
+          <strong>当前${escapeHtml(grade)}题库暂无视频资源</strong>
+          <p>安装包未内置方法视频。教师可在题目编辑页关联有授权的视频；下方 ${questions.length} 道题提供文字分步解析，不计视频学习记录。</p>
         </section>`}
       <section class="dynamic-method-section">
         <header><div><span>分步讲解</span><h2>逐步动态方法讲解</h2></div><strong>${walkthroughs.length} / ${questions.length}</strong></header>
@@ -1721,9 +1733,11 @@
         })
     };
     const gradeSet = new Set(book.grades || []);
-    return data.questions.filter((question) => {
-      return gradeSet.has(question.grade) && questionMatchesCurriculum(question, target);
-    });
+    const exact = data.questions.filter((question) => gradeSet.has(question.grade)
+      && question.curriculumSectionIds?.includes(section.id));
+    if (exact.length) return exact;
+    return data.questions.filter((question) => gradeSet.has(question.grade)
+      && !question.curriculumSectionIds?.length && questionMatchesCurriculum(question, target));
   }
 
   function knowledgePointsFor(data, book, chapter, section) {
@@ -1788,10 +1802,12 @@
     if (selectedChapter) ui.curriculumChapterId = selectedChapter.id;
     const totalCounts = curriculumCounts(allBooks);
     const currentCounts = curriculumCounts(data.curriculumBooks);
+    const editionStatus = window.PHYSICS_CURRICULUM_MAPPING?.editionStatus?.(experience.textbook);
     return `
       ${ui.view === "course"
         ? '<section class="student-page-head"><span>教材 · 概念 · 模型</span><h1>课程</h1><p>按教材册、章、节学习；每节都可进入练习、方法讲解和“我来讲一遍”。</p></section>'
         : renderModuleHeader("CURRICULUM MAP", "教材知识点", "按人教版八年级至高中选择性必修的册、章、节组织；每节包含核心要点、适用条件和对应练习。")}
+      <section class="curriculum-source-note" data-curriculum-edition-status><strong>${escapeHtml(experience.textbook || "教材版本待选择")}</strong><p>${escapeHtml(editionStatus?.message || "当前仅提供通用知识点参考，教材版本映射待核验。")}</p></section>
       <section class="curriculum-overview">
         <article><strong>${totalCounts.books}</strong><span>教材册</span><small>八年级至高三完整目录</small></article>
         <article><strong>${totalCounts.chapters}</strong><span>章节</span><small>按教材结构列出</small></article>
@@ -1835,6 +1851,7 @@
                     return `
                       <article id="curriculum-${escapeHtml(section.id)}">
                         <header><div><span>${escapeHtml(chapter.title)}</span><h3>${escapeHtml(section.title)}</h3></div><strong>${related.length} 道关联练习</strong></header>
+                        <p>${related.some((question) => question.curriculumSectionIds?.includes(section.id)) ? "已按教材节 ID 映射；仍需核对实际用书版本。" : "通用知识点关联，尚非精确教材节映射；无对应练习时不冒充覆盖完成。"}</p>
                         <ul>${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>
                         <div>
                           <button class="primary" data-curriculum-target="${escapeHtml(section.id)}" type="button">练本节题目</button>
@@ -3055,12 +3072,16 @@
         ? ["teacher", "administrator"].includes(serverRole)
         : false;
     const showAuthenticatedClassroom = Boolean((status.authenticated || status.ownerAuthenticated) && roleMatchesSession);
+    const receiptUnverified = showAuthenticatedClassroom && serverRole === "student"
+      && ui.classroom.selectedClassId && !ui.classroom.busy && !ui.classroom.studentSubmissionsLoaded;
+    const message = receiptUnverified && !ui.classroom.error
+      ? "班级基础信息可用；提交回执尚未核实，请重试读取。" : ui.classroom.message;
     content.innerHTML = `
       <header class="classroom-head">
          <div><span>班级连接与权限</span><h2>班级与邀请码</h2><p>当前模式：${escapeHtml(connectionMode)}。${status.authenticated ? `${escapeHtml(status.user.displayName)} · 服务端身份：${escapeHtml(classroomRoleLabel(status.user.role))}` : experience.role === "teacher" ? "班级创建以服务端确认为准；离线时仅保留本机学习数据" : "通过邀请码或二维码加入；离线时不会伪造加入状态"}</p><p class="classroom-sync-status" data-sync-state="${escapeHtml(learningSync.state)}">学习数据：${escapeHtml(learningSync.label)} · ${escapeHtml(learningSync.detail)}</p></div>
         <button data-classroom-action="close" type="button" aria-label="关闭">×</button>
       </header>
-      ${ui.classroom.message ? `<p class="classroom-message ${ui.classroom.error ? "error" : ""}" role="status">${escapeHtml(ui.classroom.message)}</p>` : ""}
+      ${message ? `<p class="classroom-message ${ui.classroom.error || receiptUnverified ? "error" : ""}" role="status">${escapeHtml(message)}</p>` : ""}
       ${showAuthenticatedClassroom ? renderAuthenticatedClassroom(status, selected, disabled, learningSync) : renderClassroomLogin(status, disabled)}
       <p class="classroom-boundary">${escapeHtml(status.boundary)} 学生只能通过有效邀请码加入并获得 student 权限；教师 owner 能力仅限自己创建的班级。</p>`;
     if (ui.classroom.lastInvite?.code) renderClassroomInviteQr(ui.classroom.lastInvite.joinUrl || ui.classroom.lastInvite.code);
@@ -3326,12 +3347,13 @@
     const missing = questions.length !== assignment.questionIds?.length || !questions.length;
     const canCorrect = !latest || latest.status === "returned";
     const queued = Boolean(draft.queued && !latest);
+    const receiptReady = ui.classroom.studentSubmissionsLoaded;
     const priorAnswers = new Map((latest?.answers || []).map((answer) => [answer.questionId, answer]));
     return `<section class="student-assignment-detail">
       <button data-classroom-action="assignment-back" type="button">← 返回任务列表</button>
       <h3>${escapeHtml(assignment.title)}</h3>
       <p>${escapeHtml(assignment.instructions || "完成后提交给教师；完整答案须待教师反馈后再核对。")}</p>
-      <p>当前状态：${queued ? "本机已保存，等待服务端确认" : latest ? latest.status === "returned" ? "教师退回，待订正" : latest.status === "accepted" ? "已反馈" : "已提交，待教师批改" : "未开始或本机草稿"} · ${assignment.dueAt ? `截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : "无截止时间"}</p>
+      <p>当前状态：${!receiptReady ? "提交回执未能核实；不判断是否已提交" : queued ? "本机已保存，等待服务端确认" : latest ? latest.status === "returned" ? "教师退回，待订正" : latest.status === "accepted" ? "已反馈" : "已提交，待教师批改" : "未开始或本机草稿"} · ${assignment.dueAt ? `截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : "无截止时间"}</p>
       ${history.length ? `<details><summary>提交与订正历史（${history.length} 次）</summary>${history.map((item) => `<article class="assignment-history"><strong>第 ${item.version || 1} 次 · ${escapeHtml(item.status)} · ${escapeHtml(new Date(item.submittedAt).toLocaleString("zh-CN"))}</strong>${(item.answers || []).map((answer) => `<p>${escapeHtml(answer.questionId)}：${escapeHtml(answer.response)}</p>`).join("")}<p>教师反馈：${escapeHtml(item.feedback || (item.reviewStatus === "pending" ? "待人工批改" : "暂无"))}${item.score == null ? "" : ` · ${escapeHtml(item.score)} 分`}</p></article>`).join("")}</details>` : ""}
       ${missing ? '<p class="classroom-message error">该旧作业缺少可读取的题目正文；请教师从题库重新发布。不能用空内容提交。</p>' : ""}
       ${canCorrect && !queued && !missing ? `<form data-classroom-assignment-answer-form="${escapeHtml(assignment.id)}" class="classroom-assignment-answer-form">
@@ -3346,7 +3368,7 @@
           </article>`;
         }).join("")}
         <p class="assignment-draft-status">草稿仅保存在本机，点击提交后才发送给教师。</p>
-        <button type="submit"${disabled}>${latest?.status === "returned" ? "提交订正版本" : "提交逐题作答"}</button>
+        <button type="submit"${disabled || (!receiptReady ? " disabled" : "")}>${latest?.status === "returned" ? "提交订正版本" : "提交逐题作答"}</button>
       </form>` : queued ? '<p>提交事件正在等待网络恢复；请勿重复提交。若同步失败，草稿仍保留在本机。</p>' : ""}
     </section>`;
   }
@@ -3372,12 +3394,13 @@
         </div>
         <section class="student-assignment-list">
           <header><div><span>教师下发的真实题组</span><h3>我的作业</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
+          ${!ui.classroom.studentSubmissionsLoaded ? `<p class="classroom-message error" data-student-receipt-error>提交回执读取失败或尚未核实，不会当作未提交。${ui.classroom.studentSubmissionsConfirmedAt ? `下方历史仅为 ${escapeHtml(new Date(ui.classroom.studentSubmissionsConfirmedAt).toLocaleString("zh-CN"))} 的已确认记录。` : ""}草稿仍可保存在本机；刷新回执后再提交。<button data-classroom-action="refresh" type="button"${disabled}>重试读取回执</button></p>` : ""}
           ${ui.classroom.assignments.map((assignment) => {
             const history = ui.classroom.assignmentSubmissions[assignment.id] || [];
             const latest = history[history.length - 1] || null;
             return `<article>
               <div><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.target || "按教师确认条件完成")} · ${assignment.dueAt ? escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN")) : "无截止时间"}</span><small>${escapeHtml(assignment.instructions || "")}</small></div>
-              <button data-classroom-open-assignment="${escapeHtml(assignment.id)}" type="button"${disabled}>${latest?.status === "returned" ? "查看反馈并订正" : latest ? "查看提交与反馈" : "开始作答"}</button>
+              <button data-classroom-open-assignment="${escapeHtml(assignment.id)}" type="button"${disabled}>${!ui.classroom.studentSubmissionsLoaded ? "查看作业（回执待同步）" : latest?.status === "returned" ? "查看反馈并订正" : latest ? "查看提交与反馈" : "开始作答"}</button>
             </article>`;
           }).join("") || '<p class="classroom-empty">当前没有已下发的专项方案。</p>'}
         </section>
@@ -3478,18 +3501,29 @@
   async function loadStudentAssignments(classId) {
     const client = window.PhysicsStudioClassroom;
     if (!client?.listAssignments || !classId) return;
+    const scope = `${classId}|${client.status?.().user?.id || ""}`;
+    if (ui.classroom.studentSubmissionScope !== scope) {
+      ui.classroom.assignments = [];
+      ui.classroom.assignmentSubmissions = {};
+      ui.classroom.studentSubmissionsConfirmedAt = "";
+      ui.classroom.studentSubmissionScope = scope;
+    }
+    ui.classroom.studentSubmissionsLoaded = false;
     const [response, variantResponse, submissionResponse] = await Promise.all([
       client.listAssignments(classId),
       client.listVariantSets ? client.listVariantSets(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
-      client.listOwnClassSubmissions ? client.listOwnClassSubmissions(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
+      client.listOwnClassSubmissions ? client.listOwnClassSubmissions(classId).catch(() => ({ loadFailed: true })) : Promise.resolve({ loadFailed: true })
     ]);
     ui.classroom.assignments = Array.isArray(response?.items) ? response.items : [];
-    const ownSubmissions = Array.isArray(submissionResponse?.items) ? submissionResponse.items : [];
-    ui.classroom.assignmentSubmissions = Object.fromEntries(ui.classroom.assignments.map((assignment) => [
-      assignment.id,
-      ownSubmissions.filter((item) => item.assignmentId === assignment.id).sort((left, right) =>
-        Number(left.version || 0) - Number(right.version || 0))
-    ]));
+    if (submissionResponse?.loadFailed !== true && Array.isArray(submissionResponse?.items)) {
+      ui.classroom.assignmentSubmissions = Object.fromEntries(ui.classroom.assignments.map((assignment) => [
+        assignment.id,
+        submissionResponse.items.filter((item) => item.assignmentId === assignment.id).sort((left, right) =>
+          Number(left.version || 0) - Number(right.version || 0))
+      ]));
+      ui.classroom.studentSubmissionsLoaded = true;
+      ui.classroom.studentSubmissionsConfirmedAt = new Date().toISOString();
+    }
     if (engine?.saveVariantSet && Array.isArray(variantResponse?.items) && variantResponse.items.length) {
       const state = engine.loadState();
       variantResponse.items.forEach((remote) => {
@@ -3698,6 +3732,13 @@
         ui.classroom.message = created?.queued ? "作业待同步；服务端尚未确认发布。" : "作业已由班级服务确认。";
       }, "", false);
     } else if (form.matches("[data-classroom-assignment-answer-form]")) {
+      if (!ui.classroom.studentSubmissionsLoaded) {
+        saveAssignmentDraftFromForm(form);
+        ui.classroom.error = true;
+        ui.classroom.message = "提交回执尚未核实；草稿仅在本机，请刷新后再提交。";
+        renderClassroom();
+        return;
+      }
       const assignmentId = form.dataset.classroomAssignmentAnswerForm;
       const assignment = ui.classroom.assignments.find((item) => item.id === assignmentId);
       if (!assignment) return;
