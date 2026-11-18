@@ -5,9 +5,9 @@
 
 项目继续保留 Windows 版；Android 两个独立包分别使用 `com.physicsstudio.student` 和 `com.physicsstudio.teacher`，可安装在同一设备上。
 
-## v4.3.0 内容与学习证据开发候选（本地已构建，远端待发布）
+## v4.3.0 内容与学习证据开发候选
 
-以下是计划发布地址，尚未上传成功时不可下载；本机安装包在 `发布/` 与 `发布/Android/`。远端状态以 GitHub Releases 实际附件为准。
+本机安装包在 `发布/` 与 `发布/Android/`。以下候选发布状态以 GitHub Releases 实际附件为准。
 
 - [Android 学生端 APK](https://github.com/xtu2023/Physics/releases/download/v4.3.0-rc1/Feynman-Physics-Student-Android-v4.3.0.apk)
 - [Android 教师端 APK](https://github.com/xtu2023/Physics/releases/download/v4.3.0-rc1/Feynman-Physics-Teacher-Android-v4.3.0.apk)
