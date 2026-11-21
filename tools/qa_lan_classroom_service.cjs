@@ -176,6 +176,52 @@ async function main() {
     assert.equal(joinedAgain.status, 200);
     assert.equal(joinedAgain.body.membership.id, joined1.body.membership.id);
 
+    const learningBody = {
+      profile: { clientEntityId: "profile-lan-a", displayName: "学生甲", grade: "高一", curriculumVersion: "4.3.0" },
+      attempts: [{
+        clientEntityId: "attempt-lan-a-1", questionId: "q-motion", gradingStatus: "incorrect",
+        completedAt: "2026-11-20T10:00:00.000Z", finalAnswer: "2 m/s", knowledgePointIds: ["kp-motion"]
+      }]
+    };
+    const learningPath = `/v1/classes/${createdA.body.class.id}/learning/sync`;
+    const firstLearning = await request(base, "POST", learningPath, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`, body: learningBody
+    });
+    assert.equal(firstLearning.status, 200);
+    assert.equal(firstLearning.body.accepted, 1, "LAN service must durably accept real learning evidence");
+    const repeatedLearning = await request(base, "POST", learningPath, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`, body: learningBody
+    });
+    assert.equal(repeatedLearning.body.duplicates, 1, "retries must not duplicate evidence");
+    const learningSummaryPath = `/v1/classes/${createdA.body.class.id}/learning/summary`;
+    const learningSummary = await request(base, "GET", learningSummaryPath, { authorization: ownerA });
+    assert.equal(learningSummary.body.items[0].attemptCount, 1);
+    const examBody = {
+      profile: learningBody.profile,
+      records: [{ clientEntityId: "exam-lan-a-1", examName: "阶段卷", occurredOn: "2026-11-20",
+        score: 18, maxScore: 20, knowledgePointScores: [] }],
+    };
+    const examsPath = `/v1/classes/${createdA.body.class.id}/learning/exams`;
+    const syncedExam = await request(base, "POST", examsPath, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`, body: examBody
+    });
+    assert.equal(syncedExam.body.accepted, 1);
+    const examRetry = await request(base, "POST", examsPath, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`, body: examBody
+    });
+    assert.equal(examRetry.body.duplicates, 1);
+    const examConflict = await request(base, "POST", examsPath, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+      body: { ...examBody, records: [{ ...examBody.records[0], score: 19 }] }
+    });
+    assert.equal(examConflict.status, 409);
+    const summaryWithExam = await request(base, "GET", learningSummaryPath, { authorization: ownerA });
+    assert.equal(summaryWithExam.body.items[0].examCount, 1);
+    const ownerCannotForgeLearning = await request(base, "POST", learningPath, {
+      authorization: ownerA, body: learningBody
+    });
+    assert.ok([401, 403].includes(ownerCannotForgeLearning.status), "owner token cannot impersonate a student submission");
+
     const assignment = await request(base, "POST", `/v1/classes/${createdA.body.class.id}/assignments`, {
       authorization: ownerA,
       body: {
@@ -331,7 +377,7 @@ async function main() {
     const tooLarge = await fetch(`${base}/v1/classes/anonymous`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": "qa-large-body-123456" },
-      body: JSON.stringify({ name: "x".repeat(70_000) }),
+      body: JSON.stringify({ name: "x".repeat(300_000) }),
     });
     assert.equal(tooLarge.status, 413);
 
@@ -352,6 +398,10 @@ async function main() {
     });
     assert.equal(persisted.status, 200);
     assert.equal(persisted.body.name, "高三物理一班");
+    const persistedLearningSummary = await request(base, "GET", learningSummaryPath, { authorization: ownerA });
+    assert.equal(persistedLearningSummary.body.items[0].attemptCount, 1,
+      "LAN learning records must survive service restart and legacy state normalization");
+    assert.equal(persistedLearningSummary.body.items[0].examCount, 1);
     const migratedSubmissions = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/assignment-submissions`, {
       authorization: ownerA,
     });

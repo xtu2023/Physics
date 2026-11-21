@@ -137,6 +137,26 @@
       }
       openLab(requestedTab, event.detail?.questionId || "");
     });
+    document.addEventListener("physics-studio-answer-exposed", (event) => {
+      const question = getQuestion(event.detail?.questionId);
+      if (!question || !document.body.classList.contains("role-student")) return;
+      if (lab.session?.questionId === question.id) {
+        lab.session.solutionViewed = true;
+        lab.session.hintLevel = 5;
+        void persistPracticeDraft();
+        return;
+      }
+      const prior = engine.getPracticeDraft(lab.state, question.id) || {};
+      try {
+        engine.savePracticeDraft(lab.state, question, {
+          ...prior, questionId: question.id, startedAt: Date.now(), hintLevel: 5,
+          solutionViewed: true
+        });
+        lab.state = engine.saveState(lab.state);
+      } catch (error) {
+        showLabMessage(`答案查看状态未保存：${error.message || "请检查本机存储"}`, true);
+      }
+    });
     document.addEventListener("physics-studio-open-lab", (event) => {
       openLab(event.detail?.tab || "dashboard", event.detail?.questionId || "", event.detail?.diagnosticId || "");
     });
@@ -908,6 +928,8 @@
           </div>
           <h3>${escapeHtml(question.title)}</h3>
           <p id="practiceDraftStatus" role="status">${session.restoredDraft ? "已恢复本机草稿；尚未提交，不计学习证据。" : "作答输入会自动保存在本机；草稿不计完成。"}</p>
+          ${session.firstResponse ? `<p class="practice-evidence-note">首答已保留；再次检查属于订正，不会覆盖首次评分。</p>` : ""}
+          ${session.solutionViewedBeforeFirst ? `<p class="practice-evidence-note">已查看本题解析；本次作答不计为独立正确证据。</p>` : ""}
           <button class="lab-secondary-button" data-lab-action="save-practice-draft" type="button">保存草稿</button>
           <div class="tutor-stem">${escapeHtml(question.content)}</div>
           ${Array.isArray(question.examPoints) ? `
@@ -3567,7 +3589,7 @@
       lab.session = null;
       renderPanel();
     } else if (action === "submit-diagnostic") submitDiagnostic();
-    else if (action === "grade-answer") gradeSessionAnswer();
+    else if (action === "grade-answer") await gradeSessionAnswer();
     else if (action === "generate-variant-set") await generateVariantSetAction();
     else if (action === "grade-variant-answer") gradeVariantAnswer();
     else if (action === "complete-variant-attempt") completeVariantAttempt();
@@ -3577,7 +3599,7 @@
       lab.teacherView = "today";
       renderPanel({ scrollTo: "#variantReviewQueue" });
     }
-    else if (action === "complete-attempt") completeAttempt();
+    else if (action === "complete-attempt") await completeAttempt();
     else if (action === "dismiss-completed") {
       lab.lastCompleted = null;
       renderPanel();
@@ -3924,13 +3946,22 @@
 
   function newSession(question) {
     const draft = engine.getPracticeDraft(lab.state, question.id);
+    const priorAttempt = (lab.state.attempts || []).some((attempt) => attempt.profileId === lab.state.activeProfileId
+      && attempt.questionId === question.id);
+    const solutionViewedBeforeFirst = draft?.firstResponse
+      ? draft.firstResponse.solutionViewed === true
+      : draft?.solutionViewed === true || priorAttempt;
     return {
       ...draft,
       questionId: question.id,
       profileId: lab.state.activeProfileId,
       startedAt: Date.now() - (Number(draft?.elapsedSeconds) || 0) * 1000,
       restoredDraft: Boolean(draft),
-      hintLevel: draft?.hintLevel || 0,
+      hintLevel: solutionViewedBeforeFirst ? 5 : draft?.hintLevel || 0,
+      solutionViewed: draft?.solutionViewed === true || priorAttempt,
+      solutionViewedBeforeFirst,
+      firstResponse: draft?.firstResponse || null,
+      answerRevisions: Array.isArray(draft?.answerRevisions) ? draft.answerRevisions : [],
       confidenceBefore: draft?.confidenceBefore || 3,
       confidenceAfter: draft?.confidenceAfter || 3,
       finalAnswer: draft?.finalAnswer || "",
@@ -4059,7 +4090,7 @@
     }
   }
 
-  function gradeSessionAnswer() {
+  async function gradeSessionAnswer() {
     captureSessionForm();
     const question = getQuestion(lab.session?.questionId);
     if (!question) return;
@@ -4074,7 +4105,30 @@
       lab.session.model,
       grading
     );
+    const before = {
+      firstResponse: lab.session.firstResponse,
+      answerRevisions: lab.session.answerRevisions.slice(),
+      solutionViewed: lab.session.solutionViewed,
+      hintLevel: lab.session.hintLevel,
+      grading: lab.session.grading
+    };
+    const checked = {
+      answer: lab.session.finalAnswer,
+      grading,
+      checkedAt: new Date().toISOString(),
+      hintLevel: lab.session.hintLevel,
+      solutionViewed: lab.session.solutionViewedBeforeFirst === true
+    };
+    if (!lab.session.firstResponse) lab.session.firstResponse = checked;
+    else if ((lab.session.answerRevisions.at(-1)?.answer || lab.session.firstResponse.answer) !== checked.answer) {
+      lab.session.answerRevisions.push({ ...checked, hintLevel: 5, solutionViewed: true });
+    }
     lab.session.grading = grading;
+    lab.session.solutionViewed = true;
+    if (!(await persistPracticeDraft())) {
+      Object.assign(lab.session, before);
+      return;
+    }
     renderPanel({ scrollTo: ".grading-result" });
   }
 
@@ -4370,7 +4424,8 @@
       document.getElementById("labSelfExplanation")?.focus();
       return;
     }
-    if (["incorrect", "partial"].includes(lab.session.grading.status) && !lab.session.errorType) {
+    if (["incorrect", "partial"].includes(lab.session.firstResponse?.grading?.status || lab.session.grading.status)
+      && !lab.session.errorType) {
       showLabMessage("请先选择本次最主要的错误类型。", true);
       document.getElementById("labErrorType")?.focus();
       return;
@@ -4396,9 +4451,12 @@
       durationSeconds,
       confidenceBefore: lab.session.confidenceBefore,
       confidenceAfter: lab.session.confidenceAfter,
-      hintLevel: lab.session.hintLevel,
-      finalAnswer: lab.session.finalAnswer,
-      grading: lab.session.grading,
+      hintLevel: lab.session.firstResponse?.hintLevel ?? lab.session.hintLevel,
+      finalAnswer: lab.session.firstResponse?.answer || lab.session.finalAnswer,
+      grading: lab.session.firstResponse?.grading || lab.session.grading,
+      firstResponse: lab.session.firstResponse,
+      answerRevisions: lab.session.answerRevisions,
+      solutionViewed: lab.session.firstResponse?.solutionViewed === true,
       errorType: lab.session.errorType,
       reflection: lab.session.reflection,
       selfExplanation: lab.session.selfExplanation,

@@ -19,6 +19,7 @@
     "https://appassets.androidplatform.net"
   ]);
   const MAX_SYNC_QUEUE_ITEMS = 500;
+  let lastConfirmedLearningSync = null;
 
   function settleNativeBridgeMessage(rawMessage) {
     let message = rawMessage;
@@ -980,8 +981,13 @@
   }
 
   function writeSyncList(key, value) {
+    if (!Array.isArray(value) || value.length > MAX_SYNC_QUEUE_ITEMS) {
+      throw new ClassroomError(`待同步记录超过 ${MAX_SYNC_QUEUE_ITEMS} 条上限；原有记录未被删除，请先连接班级服务完成同步。`, {
+        code: "sync_queue_full"
+      });
+    }
     try {
-      syncStorage().setItem(key, JSON.stringify(value.slice(-MAX_SYNC_QUEUE_ITEMS)));
+      syncStorage().setItem(key, JSON.stringify(value));
     } catch {
       throw new ClassroomError("无法保存待同步学习事件。", { code: "storage_unavailable" });
     }
@@ -1015,8 +1021,10 @@
     const sessionStatus = status();
     const authenticated = sessionStatus.authenticated || sessionStatus.ownerAuthenticated;
     const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-    let state = "synced";
-    let label = "已同步";
+    const confirmed = lastConfirmedLearningSync?.serverUrl === sessionStatus.serverUrl
+      && lastConfirmedLearningSync?.userId === sessionStatus.user?.id;
+    let state = confirmed && authenticated && !offline ? "synced" : "offline-local";
+    let label = confirmed && authenticated && !offline ? "已同步" : "本机已保存";
     if (conflicts.length) {
       state = "sync-conflict";
       label = "同步冲突";
@@ -1038,9 +1046,9 @@
         ? "存在需要教师或学生确认的同步冲突，原始本机记录仍保留。"
         : queue.length
           ? `本机已保存 ${queue.length} 个事件，网络恢复后按顺序同步。`
-          : authenticated && !offline
-            ? "学习摘要已同步。"
-            : "当前只写入本机学习记录。"
+          : confirmed && authenticated && !offline
+            ? `学习记录已由班级服务确认（${lastConfirmedLearningSync.confirmedAt}）。`
+            : "尚无本次会话的学习数据接收回执；本机记录仍可使用。"
     });
   }
 
@@ -1071,6 +1079,29 @@
     return event;
   }
 
+  function verifyLearningSyncReceipt(event, result) {
+    if (!event || !["learning-attempts", "learning-exams"].includes(event.kind)) return result;
+    const expected = event.kind === "learning-exams"
+      ? event.body?.records?.length || 0 : event.body?.attempts?.length || 0;
+    const accepted = Number(result?.accepted);
+    const duplicates = Number(result?.duplicates);
+    if (typeof result?.profileId !== "string" || !result.profileId
+      || !Number.isSafeInteger(accepted) || accepted < 0
+      || !Number.isSafeInteger(duplicates) || duplicates < 0
+      || accepted + duplicates !== expected
+      || !Array.isArray(result.conflicts) || result.conflicts.length) {
+      throw new ClassroomError("班级服务未确认接收全部学习记录；本机证据未删除，请稍后重试。", {
+        code: "sync_unconfirmed"
+      });
+    }
+    const current = status();
+    lastConfirmedLearningSync = {
+      serverUrl: current.serverUrl, userId: current.user?.id,
+      confirmedAt: new Date().toISOString()
+    };
+    return result;
+  }
+
   function removeQueuedEvent(eventId) {
     writeSyncList(SYNC_QUEUE_KEY, readSyncList(SYNC_QUEUE_KEY).filter((item) => item.id !== eventId));
   }
@@ -1099,10 +1130,11 @@
     let accepted = 0;
     for (const event of queue) {
       try {
-        await requestJson(event.path, {
+        const receipt = await requestJson(event.path, {
           method: event.method,
           body: event.body
         }, true, event.idempotencyKey);
+        verifyLearningSyncReceipt(event, receipt);
         removeQueuedEvent(event.id);
         accepted += 1;
       } catch (error) {
@@ -1152,10 +1184,15 @@
       return Object.freeze({ queued: true, ...syncStatus() });
     }
     try {
-      const result = await requestJson(event.path, { method: event.method, body: event.body });
+      const result = verifyLearningSyncReceipt(event,
+        await requestJson(event.path, { method: event.method, body: event.body }));
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "sync_unconfirmed") {
+        enqueueSyncEvent(event);
+        throw error;
+      }
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -1178,10 +1215,15 @@
       return Object.freeze({ queued: true, ...syncStatus() });
     }
     try {
-      const result = await requestJson(event.path, { method: event.method, body: event.body });
+      const result = verifyLearningSyncReceipt(event,
+        await requestJson(event.path, { method: event.method, body: event.body }));
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "sync_unconfirmed") {
+        enqueueSyncEvent(event);
+        throw error;
+      }
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -1254,7 +1296,7 @@
       const result = await requestJson(event.path, { method: event.method, body: event.body });
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -1313,7 +1355,7 @@
       const result = await requestJson(event.path, { method: event.method, body: event.body });
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -1352,7 +1394,7 @@
       const result = await requestJson(event.path, { method: event.method, body: event.body });
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -1447,7 +1489,7 @@
       const result = await requestJson(event.path, { method: event.method, body: event.body });
       return Object.freeze({ ...result, queued: false, ...syncStatus() });
     } catch (error) {
-      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+      if (error?.code === "network_error" || error?.code === "request_timeout") {
         enqueueSyncEvent(event);
         return Object.freeze({ queued: true, ...syncStatus() });
       }
@@ -2049,7 +2091,7 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "4.3.0",
+    version: "4.3.1",
     configure,
     status,
     checkHealth,

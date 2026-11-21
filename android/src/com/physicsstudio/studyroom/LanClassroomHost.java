@@ -60,11 +60,11 @@ final class LanClassroomHost implements Closeable {
     static final int SERVICE_PORT = 8788;
     static final int DISCOVERY_PORT = 18788;
     private static final int MAX_HEADER_BYTES = 16 * 1024;
-    private static final int MAX_BODY_BYTES = 64 * 1024;
+    private static final int MAX_BODY_BYTES = 256 * 1024;
     private static final int MAX_STRING_BYTES = 1024 * 1024;
     private static final int MAX_COLLECTION_ITEMS = 10000;
     private static final int STATE_MAGIC = 0x5053434c;
-    private static final int STATE_VERSION = 2;
+    private static final int STATE_VERSION = 3;
     private static final String DISCOVERY_PREFIX = "PHYSICS_STUDIO_CLASSROOM_DISCOVER_V1:";
     private static final Pattern NONCE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{8,80}$");
     private static final Pattern INVITE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{22}$");
@@ -274,16 +274,17 @@ final class LanClassroomHost implements Closeable {
                 return HttpResponse.json(200, listOwnClassSubmissions(classId, authorization));
             }
             if ("learning".equals(segment[3]) && "summary".equals(segment[4]) && "GET".equals(request.method)) {
-                return HttpResponse.json(200, emptyClassCollection(classId, authorization));
+                return HttpResponse.json(200, learningSummary(classId, authorization));
             }
             if ("learning".equals(segment[3])
                 && ("sync".equals(segment[4]) || "exams".equals(segment[4]))
                 && "POST".equals(request.method)) {
-                return HttpResponse.json(200, acceptLearningSync(classId, authorization));
+                return HttpResponse.json(200, acceptLearningSync(classId, authorization,
+                    request.jsonBody(), "exams".equals(segment[4])));
             }
             if ("learning".equals(segment[3]) && "report-snapshots".equals(segment[4])
                 && "POST".equals(request.method)) {
-                return HttpResponse.json(201, acceptLearningSync(classId, authorization));
+                throw new ClientError(501, "snapshot_not_supported", "同网服务尚不支持报告快照上传，请使用完整备份导出。");
             }
         }
         if (segment.length == 6 && "v1".equals(segment[0]) && "classes".equals(segment[1])
@@ -880,13 +881,109 @@ final class LanClassroomHost implements Closeable {
         }
     }
 
-    private Map<String, Object> acceptLearningSync(String classId, String authorization) throws ClientError {
+    private Map<String, Object> learningSummary(String classId, String authorization) throws ClientError {
         synchronized (gate) {
             ClassRecord classroom = activeClass(classId);
-            requireClassAccess(classroom, authorization);
+            requireOwner(classroom, authorization);
+            List<Object> items = new ArrayList<Object>();
+            for (MembershipRecord member : state.memberships) {
+                if (!classroom.id.equals(member.classId) || !"active".equals(member.status)) continue;
+                int attempts = 0, exams = 0, pending = 0;
+                String latest = null;
+                for (LearningRecord record : state.learningRecords) {
+                    if (!classroom.id.equals(record.classId) || !member.studentId.equals(record.studentId)) continue;
+                    if ("attempt".equals(record.kind)) attempts++; else exams++;
+                    if ("pending".equals(record.gradingStatus) || "review-required".equals(record.gradingStatus)) pending++;
+                    if (record.completedAt != null && (latest == null || record.completedAt.compareTo(latest) > 0)) latest = record.completedAt;
+                }
+                Map<String, Object> item = object();
+                item.put("membershipId", member.id);
+                item.put("studentUserId", member.studentId);
+                item.put("displayName", member.displayName);
+                item.put("profileId", member.studentId);
+                item.put("attemptCount", Integer.valueOf(attempts));
+                item.put("examCount", Integer.valueOf(exams));
+                item.put("pendingReviewCount", Integer.valueOf(pending));
+                item.put("lastEvidenceAt", latest);
+                items.add(item);
+            }
             Map<String, Object> result = object();
-            result.put("accepted", Integer.valueOf(0));
-            result.put("duplicates", Integer.valueOf(0));
+            result.put("classId", classroom.id);
+            result.put("items", items);
+            return result;
+        }
+    }
+
+    private Map<String, Object> acceptLearningSync(String classId, String authorization,
+        Map<String, Object> body, boolean exams) throws ClientError, IOException {
+        synchronized (gate) {
+            ClassRecord classroom = activeClass(classId);
+            StudentRecord student = requireStudent(authorization);
+            MembershipRecord membership = findMembership(classroom.id, student.id);
+            if (membership == null || !"active".equals(membership.status)) {
+                throw new ClientError(403, "resource_forbidden", "无权向该班级提交学习记录。");
+            }
+            Object rawProfile = body.get("profile");
+            if (!(rawProfile instanceof Map<?,?>)) throw validation("学习档案无效。");
+            String profileId = requiredText(valueText(((Map<?,?>)rawProfile).get("clientEntityId")), "学习档案编号", 160);
+            Object rawRecords = body.get(exams ? "records" : "attempts");
+            if (!(rawRecords instanceof List<?>) || ((List<?>)rawRecords).size() > 100) {
+                throw validation("学习记录列表无效。");
+            }
+            List<LearningRecord> additions = new ArrayList<LearningRecord>();
+            int duplicates = 0;
+            for (Object raw : (List<?>)rawRecords) {
+                if (!(raw instanceof Map<?,?>)) throw validation("学习记录无效。");
+                Map<?,?> item = (Map<?,?>)raw;
+                String id = requiredText(valueText(item.get("clientEntityId")), "学习记录编号", 160);
+                if (item.containsKey("profileClientEntityId")
+                    && !profileId.equals(valueText(item.get("profileClientEntityId")))) {
+                    throw validation("学习记录与档案不一致。");
+                }
+                String kind = exams ? "exam" : "attempt";
+                String payload = Json.stringify(item);
+                String hash = sha256(payload);
+                LearningRecord previous = null;
+                for (LearningRecord saved : state.learningRecords) {
+                    if (classroom.id.equals(saved.classId) && student.id.equals(saved.studentId)
+                        && kind.equals(saved.kind) && id.equals(saved.clientEntityId)) { previous = saved; break; }
+                }
+                if (previous == null) for (LearningRecord saved : additions) {
+                    if (kind.equals(saved.kind) && id.equals(saved.clientEntityId)) { previous = saved; break; }
+                }
+                if (previous != null) {
+                    if (!hash.equals(previous.payloadHash)) {
+                        throw new ClientError(409, "sync_conflict", "相同学习记录编号对应不同内容。");
+                    }
+                    duplicates++;
+                    continue;
+                }
+                LearningRecord next = new LearningRecord();
+                next.classId = classroom.id;
+                next.studentId = student.id;
+                next.profileClientEntityId = profileId;
+                next.kind = kind;
+                next.clientEntityId = id;
+                next.questionId = exams ? "" : requiredText(valueText(item.get("questionId")), "题目编号", 160);
+                next.gradingStatus = exams ? "" : valueText(item.get("gradingStatus"));
+                next.completedAt = exams ? valueText(item.get("occurredOn")) : valueText(item.get("completedAt"));
+                next.payloadHash = hash;
+                next.payloadJson = payload;
+                additions.add(next);
+            }
+            if (state.learningRecords.size() + additions.size() > MAX_COLLECTION_ITEMS) {
+                throw new ClientError(507, "storage_limit", "同网班级学习记录已达到本机容量上限，请先导出备份并迁移服务。");
+            }
+            state.learningRecords.addAll(additions);
+            try { if (!additions.isEmpty()) saveLocked(); }
+            catch (IOException error) {
+                state.learningRecords.removeAll(additions);
+                throw error;
+            }
+            Map<String, Object> result = object();
+            result.put("profileId", student.id);
+            result.put("accepted", Integer.valueOf(additions.size()));
+            result.put("duplicates", Integer.valueOf(duplicates));
             result.put("conflicts", new ArrayList<Object>());
             result.put("lastAcceptedAt", iso(System.currentTimeMillis()));
             return result;
@@ -1124,7 +1221,7 @@ final class LanClassroomHost implements Closeable {
                 throw new IOException("unsupported classroom state");
             }
             int version = input.readInt();
-            if (version != 1 && version != STATE_VERSION) throw new IOException("unsupported classroom state");
+            if (version != 1 && version != 2 && version != STATE_VERSION) throw new IOException("unsupported classroom state");
             State value = new State();
             value.instanceId = readString(input);
             readClasses(input, value.classes);
@@ -1135,6 +1232,7 @@ final class LanClassroomHost implements Closeable {
             readGroups(input, value.groups);
             readAssignments(input, value.assignments, version);
             readSubmissions(input, value.submissions, version);
+            if (version >= 3) readLearningRecords(input, value.learningRecords);
             if (version == 1) {
                 Map<String, Integer> versions = new HashMap<String, Integer>();
                 for (SubmissionRecord submission : value.submissions) {
@@ -1170,6 +1268,7 @@ final class LanClassroomHost implements Closeable {
             writeGroups(output, state.groups);
             writeAssignments(output, state.assignments);
             writeSubmissions(output, state.submissions);
+            writeLearningRecords(output, state.learningRecords);
             output.flush();
         } finally {
             output.close();
@@ -1552,6 +1651,27 @@ final class LanClassroomHost implements Closeable {
     private static void readSubmissions(DataInputStream in, List<SubmissionRecord> values, int version) throws IOException {
         for(int i=0,n=readCount(in);i<n;i++){SubmissionRecord v=new SubmissionRecord();v.id=readString(in);v.assignmentId=readString(in);v.studentId=readString(in);v.clientEntityId=readString(in);v.answersJson=readString(in);v.status=readString(in);v.submittedAt=in.readLong();if(version>=2){v.version=in.readInt();v.previousSubmissionId=readString(in);v.reviewStatus=readString(in);v.score=in.readDouble();v.feedback=readString(in);v.reviewRevision=in.readInt();v.updatedAt=in.readLong();v.perQuestionScoresJson=readString(in);}values.add(v);}
     }
+    private static void writeLearningRecords(DataOutputStream out, List<LearningRecord> values) throws IOException {
+        out.writeInt(values.size());
+        for (LearningRecord value : values) {
+            writeString(out, value.classId); writeString(out, value.studentId);
+            writeString(out, value.profileClientEntityId); writeString(out, value.kind);
+            writeString(out, value.clientEntityId); writeString(out, value.questionId);
+            writeString(out, value.gradingStatus); writeString(out, value.completedAt);
+            writeString(out, value.payloadHash); writeString(out, value.payloadJson);
+        }
+    }
+    private static void readLearningRecords(DataInputStream in, List<LearningRecord> values) throws IOException {
+        for (int i = 0, count = readCount(in); i < count; i++) {
+            LearningRecord value = new LearningRecord();
+            value.classId = readString(in); value.studentId = readString(in);
+            value.profileClientEntityId = readString(in); value.kind = readString(in);
+            value.clientEntityId = readString(in); value.questionId = readString(in);
+            value.gradingStatus = readString(in); value.completedAt = readString(in);
+            value.payloadHash = readString(in); value.payloadJson = readString(in);
+            values.add(value);
+        }
+    }
 
     private static final class State {
         String instanceId = UUID.randomUUID().toString();
@@ -1563,6 +1683,7 @@ final class LanClassroomHost implements Closeable {
         final List<GroupRecord> groups = new ArrayList<GroupRecord>();
         final List<AssignmentRecord> assignments = new ArrayList<AssignmentRecord>();
         final List<SubmissionRecord> submissions = new ArrayList<SubmissionRecord>();
+        final List<LearningRecord> learningRecords = new ArrayList<LearningRecord>();
     }
     private static final class ClassRecord { String id,ownerUserId,ownerCapabilityHash,name,grade,subject,schoolLabel,status; int revision; long createdAt,updatedAt; }
     private static final class InviteRecord { String id,classId,codeHash; long expiresAt; int maxUses,useCount; boolean active; }
@@ -1572,6 +1693,7 @@ final class LanClassroomHost implements Closeable {
     private static final class GroupRecord { String id,classId,name; long createdAt; }
     private static final class AssignmentRecord { String id,classId,title,instructions,targetType,targetId,target,questionItemsJson="[]"; List<String> questionIds=new ArrayList<String>(),knowledgePointKeys=new ArrayList<String>(); long dueAt,createdAt; boolean published; }
     private static final class SubmissionRecord { String id,assignmentId,studentId,clientEntityId,answersJson,status,previousSubmissionId,reviewStatus="pending",feedback,perQuestionScoresJson="[]"; long submittedAt,updatedAt; int version=1,reviewRevision=1; double score=-1; }
+    private static final class LearningRecord { String classId,studentId,profileClientEntityId,kind,clientEntityId,questionId,gradingStatus,completedAt,payloadHash,payloadJson; }
 
     private static final class ClientError extends Exception {
         final int status; final String code;

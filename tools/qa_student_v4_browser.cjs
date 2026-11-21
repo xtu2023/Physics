@@ -240,6 +240,43 @@ const screenshotDirectory = path.join(root, "发布", "QA", "student-v4-mobile")
   assert.equal(legacyGradeAudit.pending, true);
   assert.equal(legacyGradeAudit.originalAnswer, "适合同时使用；总功率 2700 W，承载上限 2200 W");
   assert.equal(legacyGradeAudit.marker, "4.0.2");
+  const firstAnswerQuestion = await page.evaluate(() => {
+    const engine = window.PHYSICS_LEARNING_ENGINE;
+    const question = window.PhysicsStudioApp.getQuestions().find((item) => item.grade === "高一"
+      && item.autoScorable === true && item.questionType === "计算题"
+      && engine.gradeFinalAnswer(item, item.answer).status === "correct"
+      && engine.gradeFinalAnswer(item, "999999 m/s").status === "incorrect");
+    return question ? { id: question.id, answer: question.answer } : null;
+  });
+  assert.ok(firstAnswerQuestion, "test needs one real auto-scored calculation question");
+  await page.evaluate((questionId) => document.dispatchEvent(new CustomEvent("physics-studio-start-learning", {
+    detail: { questionId }
+  })), firstAnswerQuestion.id);
+  await page.locator('#learningLabModal[open] #labFinalAnswer').fill("999999 m/s");
+  await page.locator('#learningLabModal [data-lab-action="grade-answer"]').click();
+  await page.locator('#learningLabModal .grading-result').waitFor();
+  await page.locator('#learningLabModal #labFinalAnswer').fill(firstAnswerQuestion.answer);
+  await page.locator('#learningLabModal [data-lab-action="grade-answer"]').click();
+  await page.locator('#learningLabModal #labSelfExplanation').fill("先确定研究对象及适用条件，再代入运动学方程计算并核对单位。");
+  await page.locator('#learningLabModal #labErrorType').selectOption({ index: 1 });
+  await page.locator('#learningLabModal [data-lab-action="complete-attempt"]').click();
+  await page.waitForFunction((questionId) => window.PHYSICS_LEARNING_ENGINE.loadState().attempts
+    .some((attempt) => attempt.questionId === questionId), firstAnswerQuestion.id);
+  const firstAnswerEvidence = await page.evaluate((questionId) => {
+    const engine = window.PHYSICS_LEARNING_ENGINE;
+    const learning = engine.loadState();
+    const attempt = learning.attempts.find((item) => item.questionId === questionId);
+    return {
+      firstAnswer: attempt.firstResponse?.answer,
+      firstStatus: attempt.grading?.status,
+      corrections: attempt.answerRevisions?.map((entry) => entry.grading?.status) || [],
+      independentCorrect: engine.questionMasteryEvidence(learning, questionId).independentCorrect
+    };
+  }, firstAnswerQuestion.id);
+  assert.equal(firstAnswerEvidence.firstAnswer, "999999 m/s", "first wrong answer must survive correction");
+  assert.equal(firstAnswerEvidence.firstStatus, "incorrect", "post-solution correction must not replace first grading");
+  assert.deepEqual(firstAnswerEvidence.corrections, ["correct"]);
+  assert.equal(firstAnswerEvidence.independentCorrect, 0);
   assert.equal(errors.length, 0, errors.join("\n"));
 
   console.log(JSON.stringify({

@@ -160,7 +160,7 @@ async function installServerMock(page, role, calls) {
       return json(route, 200, {
         items: [{
           id: membershipId,
-          classId,
+          classId: activeClassId,
           groupId: groups[0]?.id || null,
           userId: "66666666-6666-4666-8666-666666666666",
           displayName: "待审核学生",
@@ -566,6 +566,40 @@ async function login(page, loginName) {
     assert.ok(mobileFit.scrollWidth <= mobileFit.clientWidth + 1, JSON.stringify(mobileFit));
     assert.ok(mobileFit.scrollHeight >= mobileFit.clientHeight, JSON.stringify(mobileFit));
     await student.page.screenshot({ path: path.join(outputDirectory, "student-join.png"), fullPage: false });
+    await teacher.page.evaluate(async () => {
+      const engine = window.PHYSICS_LEARNING_ENGINE;
+      const learning = engine.loadState();
+      learning.profiles.push({
+        id: "qa-target-student", portableProfileId: "qa-portable-target-student",
+        studentNumber: "2026001", name: "定向学生", role: "student", grade: "九年级"
+      });
+      engine.saveState(learning);
+      await engine.awaitLastSave();
+    });
+    const directedQuestionIds = publishedCall.body.questionIds;
+    await teacher.page.evaluate((questionIds) => document.dispatchEvent(new CustomEvent(
+      "physics-studio-assignment-confirmed", { detail: { assignment: {
+        title: "定向范围验收", questionIds, questionCount: questionIds.length,
+        targetProfileIds: ["qa-target-student"]
+      } } }
+    )), directedQuestionIds);
+    for (let wait = 0; wait < 40 && !teacherCalls.some((call) => call.body?.title === "定向范围验收"); wait += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const directedCall = teacherCalls.find((call) => call.body?.title === "定向范围验收");
+    assert.ok(directedCall, `directed assignment not sent: ${await teacher.page.locator("#classroomContent").innerText()}`);
+    assert.equal(directedCall?.body?.targetType, "student", "individual assignment must not widen to the entire class");
+    assert.equal(directedCall?.body?.targetId, membershipId);
+    const publishCount = teacherCalls.filter((call) => call.path.endsWith("/assignments") && call.method === "POST").length;
+    await teacher.page.evaluate((questionIds) => document.dispatchEvent(new CustomEvent(
+      "physics-studio-assignment-confirmed", { detail: { assignment: {
+        title: "未匹配学生不可广播", questionIds, questionCount: questionIds.length,
+        targetProfileIds: ["unknown-student"]
+      } } }
+    )), directedQuestionIds);
+    await teacher.page.waitForTimeout(300);
+    assert.equal(teacherCalls.filter((call) => call.path.endsWith("/assignments") && call.method === "POST").length,
+      publishCount, "an unresolved student target must block publication instead of broadcasting");
     assert.deepEqual(student.errors, [
       "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
     ], "only the deliberately injected receipt HTTP 503 may be logged; no script errors are allowed");

@@ -65,6 +65,48 @@ assert.equal(engine.normalizeErrorType("审题疏漏"), "审题或计算疏漏")
 
 const state = engine.defaultState();
 const profileId = state.activeProfileId;
+const firstAnswerState = engine.defaultState();
+const firstAnswerQuestion = { id: "first-answer-boundary", topic: "匀变速直线运动", knowledgePointId: "kp-motion", questionType: "计算题" };
+const firstAnswerDraft = engine.savePracticeDraft(firstAnswerState, firstAnswerQuestion, {
+  questionId: firstAnswerQuestion.id,
+  startedAt: Date.now(),
+  finalAnswer: "2 m/s",
+  firstResponse: { answer: "2 m/s", grading: { status: "incorrect", score: 0 }, checkedAt: "2026-11-20T09:00:00.000Z", hintLevel: 0 },
+  answerRevisions: [{ answer: "4 m/s", grading: { status: "correct", score: 1 }, checkedAt: "2026-11-20T09:01:00.000Z", hintLevel: 5 }],
+  solutionViewed: true
+});
+assert.equal(firstAnswerDraft.firstResponse.answer, "2 m/s", "first checked answer must survive draft persistence");
+assert.equal(firstAnswerDraft.answerRevisions.length, 1);
+const firstAnswerAttempt = engine.recordAttempt(firstAnswerState, {
+  question: firstAnswerQuestion, questionId: firstAnswerQuestion.id, topic: firstAnswerQuestion.topic,
+  finalAnswer: "2 m/s", grading: { status: "incorrect", score: 0 }, hintLevel: 0,
+  firstResponse: firstAnswerDraft.firstResponse,
+  answerRevisions: firstAnswerDraft.answerRevisions,
+  solutionViewed: true
+});
+assert.equal(firstAnswerAttempt.firstResponse.answer, "2 m/s");
+assert.equal(firstAnswerAttempt.answerRevisions[0].grading.status, "correct");
+assert.equal(engine.questionMasteryEvidence(firstAnswerState, firstAnswerQuestion.id).independentCorrect, 0,
+  "correcting after seeing the answer must not count as independent correct evidence");
+const exposedCorrect = engine.recordAttempt(firstAnswerState, {
+  question: { ...firstAnswerQuestion, id: "exposed-correct" }, questionId: "exposed-correct",
+  topic: firstAnswerQuestion.topic, finalAnswer: "4 m/s", grading: { status: "correct", score: 1 },
+  hintLevel: 0, solutionViewed: true
+});
+assert.equal(engine.questionMasteryEvidence(firstAnswerState, exposedCorrect.questionId).independentCorrect, 0,
+  "a correct answer after a method walkthrough must not be independent evidence");
+firstAnswerState.profiles[0].minorAgeBand = "14plus";
+const pendingSyncAttempt = engine.recordAttempt(firstAnswerState, {
+  question: { ...firstAnswerQuestion, id: "sync-pending-score" }, questionId: "sync-pending-score",
+  topic: firstAnswerQuestion.topic, finalAnswer: "待教师核对", grading: { status: "review-required", score: null },
+  hintLevel: 0
+});
+const pendingSync = engine.buildLearningSyncPayload(firstAnswerState, [], firstAnswerState.activeProfileId);
+const pendingSynced = pendingSync.attempts.find((item) => item.clientEntityId === pendingSyncAttempt.id);
+assert.equal(pendingSynced.gradingStatus, "pending");
+assert.equal(pendingSynced.score, null, "unreviewed work must not be sent as score zero");
+assert.equal(pendingSynced.confidenceBefore, null, "missing confidence must not be fabricated as 1");
+assert.equal(pendingSynced.modelScore, null, "missing model score must not be fabricated as zero");
 const questions = [
   { id: "motion-1", title: "速度变化一", topic: "匀变速直线运动", knowledgePointId: "kp-motion", grade: "高一" },
   { id: "motion-2", title: "速度变化二", topic: "匀变速直线运动", knowledgePointId: "kp-motion", grade: "高一" },

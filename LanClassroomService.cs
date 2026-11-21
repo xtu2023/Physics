@@ -13,8 +13,8 @@ using System.Web.Script.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("费曼物理班级服务")]
 [assembly: System.Reflection.AssemblyProduct("费曼物理")]
-[assembly: System.Reflection.AssemblyVersion("4.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("4.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("4.3.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("4.3.1.0")]
 
 internal static class LanClassroomProgram
 {
@@ -120,7 +120,9 @@ internal static class JsonCodec
     private static JavaScriptSerializer CreateSerializer()
     {
         JavaScriptSerializer serializer = new JavaScriptSerializer();
-        serializer.MaxJsonLength = 1024 * 1024;
+        // One class can accumulate many small learning records; the previous 1 MiB
+        // serializer limit rejected otherwise valid durable sync writes.
+        serializer.MaxJsonLength = 32 * 1024 * 1024;
         serializer.RecursionLimit = 64;
         return serializer;
     }
@@ -903,15 +905,110 @@ internal sealed class ClassroomStore
         }
     }
 
-    public Dictionary<string, object> AcceptLearningSync(string classId, string authorization)
+    public Dictionary<string, object> LearningSummary(string classId, string authorization)
     {
         lock (gate)
         {
             ClassRecord classroom = ActiveClass(classId);
-            RequireClassAccess(classroom, authorization);
+            RequireOwner(classroom, authorization);
+            List<object> items = new List<object>();
+            foreach (MembershipRecord member in data.Memberships)
+            {
+                if (member.ClassId != classroom.Id || member.Status != "active") continue;
+                int attempts = 0, exams = 0, pending = 0;
+                string latest = null;
+                foreach (LearningRecord record in data.LearningRecords)
+                {
+                    if (record.ClassId != classroom.Id || record.StudentId != member.StudentId) continue;
+                    if (record.Kind == "attempt") attempts++; else exams++;
+                    if (record.GradingStatus == "pending" || record.GradingStatus == "review-required") pending++;
+                    if (latest == null || String.CompareOrdinal(record.CompletedAt, latest) > 0) latest = record.CompletedAt;
+                }
+                Dictionary<string, object> item = new Dictionary<string, object>();
+                item["membershipId"] = member.Id;
+                item["studentUserId"] = member.StudentId;
+                item["displayName"] = member.DisplayName;
+                item["profileId"] = member.StudentId;
+                item["attemptCount"] = attempts;
+                item["examCount"] = exams;
+                item["pendingReviewCount"] = pending;
+                item["lastEvidenceAt"] = latest;
+                items.Add(item);
+            }
             Dictionary<string, object> result = new Dictionary<string, object>();
-            result["accepted"] = 0;
-            result["duplicates"] = 0;
+            result["classId"] = classroom.Id;
+            result["items"] = items;
+            return result;
+        }
+    }
+
+    public Dictionary<string, object> AcceptLearningSync(
+        string classId, string authorization, Dictionary<string, object> body, bool exams)
+    {
+        lock (gate)
+        {
+            ClassRecord classroom = ActiveClass(classId);
+            StudentRecord student = RequireStudent(authorization);
+            if (!data.Memberships.Exists(delegate(MembershipRecord item)
+                { return item.ClassId == classroom.Id && item.StudentId == student.Id && item.Status == "active"; }))
+                throw new ClientError(403, "resource_forbidden", "无权向该班级提交学习记录。");
+            Dictionary<string, object> profile = body != null && body.ContainsKey("profile")
+                ? body["profile"] as Dictionary<string, object> : null;
+            if (profile == null) throw new ClientError(400, "validation_error", "学习档案无效。");
+            string profileId = RequiredText(BodyText(profile, "clientEntityId"), "学习档案编号", 160);
+            string key = exams ? "records" : "attempts";
+            IList records = body.ContainsKey(key) ? body[key] as IList : null;
+            if (records == null || records.Count > 100)
+                throw new ClientError(400, "validation_error", "学习记录列表无效。");
+            List<LearningRecord> additions = new List<LearningRecord>();
+            int duplicates = 0;
+            foreach (object value in records)
+            {
+                Dictionary<string, object> item = value as Dictionary<string, object>;
+                if (item == null) throw new ClientError(400, "validation_error", "学习记录无效。");
+                string id = RequiredText(BodyText(item, "clientEntityId"), "学习记录编号", 160);
+                if (item.ContainsKey("profileClientEntityId")
+                    && BodyText(item, "profileClientEntityId") != profileId)
+                    throw new ClientError(400, "validation_error", "学习记录与档案不一致。");
+                string kind = exams ? "exam" : "attempt";
+                string payload = JsonCodec.Serialize(item);
+                string hash = SecurityTokens.Sha256(payload);
+                LearningRecord previous = data.LearningRecords.Find(delegate(LearningRecord record)
+                    { return record.ClassId == classroom.Id && record.StudentId == student.Id
+                        && record.Kind == kind && record.ClientEntityId == id; });
+                if (previous == null) previous = additions.Find(delegate(LearningRecord record)
+                    { return record.ClientEntityId == id && record.Kind == kind; });
+                if (previous != null)
+                {
+                    if (previous.PayloadHash != hash)
+                        throw new ClientError(409, "sync_conflict", "相同学习记录编号对应不同内容。");
+                    duplicates++;
+                    continue;
+                }
+                LearningRecord next = new LearningRecord();
+                next.ClassId = classroom.Id;
+                next.StudentId = student.Id;
+                next.ProfileClientEntityId = profileId;
+                next.Kind = kind;
+                next.ClientEntityId = id;
+                next.QuestionId = exams ? "" : RequiredText(BodyText(item, "questionId"), "题目编号", 160);
+                next.GradingStatus = exams ? "" : BodyText(item, "gradingStatus");
+                next.CompletedAt = exams ? BodyText(item, "occurredOn") : BodyText(item, "completedAt");
+                next.PayloadHash = hash;
+                next.PayloadJson = payload;
+                additions.Add(next);
+            }
+            data.LearningRecords.AddRange(additions);
+            try { if (additions.Count > 0) SaveLocked(); }
+            catch
+            {
+                foreach (LearningRecord record in additions) data.LearningRecords.Remove(record);
+                throw;
+            }
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["profileId"] = student.Id;
+            result["accepted"] = additions.Count;
+            result["duplicates"] = duplicates;
             result["conflicts"] = new List<object>();
             result["lastAcceptedAt"] = DateTime.UtcNow.ToString("o");
             return result;
@@ -924,7 +1021,7 @@ internal sealed class ClassroomStore
         try
         {
             DataEnvelope loaded = JsonCodec.Deserialize<DataEnvelope>(File.ReadAllText(dataFile, Encoding.UTF8));
-            if (loaded == null || (loaded.SchemaVersion != 1 && loaded.SchemaVersion != 2))
+            if (loaded == null || (loaded.SchemaVersion != 1 && loaded.SchemaVersion != 2 && loaded.SchemaVersion != 3))
                 throw new InvalidDataException("班级数据版本无效。");
             loaded.Normalize();
             return loaded;
@@ -933,7 +1030,7 @@ internal sealed class ClassroomStore
         {
             if (!File.Exists(backupFile)) throw;
             DataEnvelope backup = JsonCodec.Deserialize<DataEnvelope>(File.ReadAllText(backupFile, Encoding.UTF8));
-            if (backup == null || (backup.SchemaVersion != 1 && backup.SchemaVersion != 2)) throw;
+            if (backup == null || (backup.SchemaVersion != 1 && backup.SchemaVersion != 2 && backup.SchemaVersion != 3)) throw;
             backup.Normalize();
             return backup;
         }
@@ -1238,7 +1335,7 @@ internal sealed class ClassroomStore
 internal sealed class ClassroomHttpServer : IDisposable
 {
     private const int MaximumHeaderBytes = 16 * 1024;
-    private const int MaximumBodyBytes = 64 * 1024;
+    private const int MaximumBodyBytes = 256 * 1024;
     private readonly ClassroomStore store;
     private readonly TcpListener listener;
     private readonly Dictionary<string, Queue<DateTime>> rateWindows = new Dictionary<string, Queue<DateTime>>();
@@ -1389,13 +1486,14 @@ internal sealed class ClassroomHttpServer : IDisposable
         {
             string classId = segment[2].ToLowerInvariant();
             if (segment[3] == "learning" && segment[4] == "summary" && request.Method == "GET")
-                return HttpResponse.Json(200, store.EmptyClassCollection(classId, authorization));
+                return HttpResponse.Json(200, store.LearningSummary(classId, authorization));
             if (segment[3] == "learning" && (segment[4] == "sync" || segment[4] == "exams") && request.Method == "POST")
-                return HttpResponse.Json(200, store.AcceptLearningSync(classId, authorization));
+                return HttpResponse.Json(200, store.AcceptLearningSync(classId, authorization,
+                    request.JsonBody(), segment[4] == "exams"));
             if (segment[3] == "assignment-submissions" && segment[4] == "me" && request.Method == "GET")
                 return HttpResponse.Json(200, store.ListOwnClassSubmissions(classId, authorization));
             if (segment[3] == "learning" && segment[4] == "report-snapshots" && request.Method == "POST")
-                return HttpResponse.Json(201, store.AcceptLearningSync(classId, authorization));
+                throw new ClientError(501, "snapshot_not_supported", "同网服务尚不支持报告快照上传，请使用完整备份导出。");
         }
         if (segment.Length == 6 && segment[0] == "v1" && segment[1] == "classes"
             && segment[3] == "learning" && segment[4] == "report-snapshots" && request.Method == "GET")
@@ -1758,11 +1856,12 @@ internal sealed class DataEnvelope
     public List<GroupRecord> Groups { get; set; }
     public List<AssignmentRecord> Assignments { get; set; }
     public List<SubmissionRecord> Submissions { get; set; }
+    public List<LearningRecord> LearningRecords { get; set; }
 
     public static DataEnvelope New()
     {
         DataEnvelope value = new DataEnvelope();
-        value.SchemaVersion = 2;
+        value.SchemaVersion = 3;
         value.InstanceId = Guid.NewGuid().ToString();
         value.Normalize();
         return value;
@@ -1778,6 +1877,7 @@ internal sealed class DataEnvelope
         if (Groups == null) Groups = new List<GroupRecord>();
         if (Assignments == null) Assignments = new List<AssignmentRecord>();
         if (Submissions == null) Submissions = new List<SubmissionRecord>();
+        if (LearningRecords == null) LearningRecords = new List<LearningRecord>();
         foreach (AssignmentRecord assignment in Assignments)
         {
             if (assignment.QuestionIds == null) assignment.QuestionIds = new List<string>();
@@ -1794,8 +1894,22 @@ internal sealed class DataEnvelope
                 submission.ReviewStatus = submission.Status == "accepted" ? "approved" : "pending";
             if (String.IsNullOrEmpty(submission.UpdatedAt)) submission.UpdatedAt = submission.SubmittedAt;
         }
-        SchemaVersion = 2;
+        SchemaVersion = 3;
     }
+}
+
+internal sealed class LearningRecord
+{
+    public string ClassId { get; set; }
+    public string StudentId { get; set; }
+    public string ProfileClientEntityId { get; set; }
+    public string Kind { get; set; }
+    public string ClientEntityId { get; set; }
+    public string QuestionId { get; set; }
+    public string GradingStatus { get; set; }
+    public string CompletedAt { get; set; }
+    public string PayloadHash { get; set; }
+    public string PayloadJson { get; set; }
 }
 
 internal sealed class ClassRecord

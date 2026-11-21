@@ -3188,6 +3188,11 @@ function buildDetailedSolutionMarkup(question) {
 }
 
 function openDetail(question) {
+  if (document.body.classList.contains("role-student")) {
+    document.dispatchEvent(new CustomEvent("physics-studio-answer-exposed", {
+      detail: { questionId: question.id, source: "question-detail" }
+    }));
+  }
   releaseActiveVideo();
   const mastery = getMasteryEvidence(question);
   const videoMarkup = buildVideoMarkup(question);

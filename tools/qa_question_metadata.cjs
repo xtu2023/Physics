@@ -25,6 +25,16 @@ const banks = [
   context.window.PHYSICS_TARGETED_PRACTICE_BANK.questions
 ];
 const questions = banks.flat();
+const satellite = questions.find((item) => item.id === "cs-mock-2027-zk-a-q16");
+assert.ok(satellite);
+assert.match(satellite.content, /非地球静止轨道/,
+  "the satellite answer needs a specified non-geostationary orbit");
+assert.match(satellite.content, /地面观测站/);
+const brakingCounter = questions.find((item) => item.id === "cs-targeted-h3-001-counter");
+assert.ok(brakingCounter);
+assert.ok(brakingCounter.examPoints.includes("重力加速度"));
+assert.ok(!brakingCounter.examPoints.includes("反应时间"),
+  "a vertical-throw counterexample must not count as braking reaction-time evidence");
 const ids = new Set();
 const invalid = [];
 for (const question of questions) {

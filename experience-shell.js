@@ -2557,6 +2557,9 @@
       window.alert("该题缺少可播放的完整解析。");
       return;
     }
+    document.dispatchEvent(new CustomEvent("physics-studio-answer-exposed", {
+      detail: { questionId, source: "method-walkthrough" }
+    }));
     stopMethodPlayback();
     ui.methodPlayer = {
       questionId,
@@ -3559,25 +3562,46 @@
     }
     try {
       const state = engine?.loadState?.();
+      const targetProfileIds = Array.isArray(assignment.targetProfileIds)
+        ? [...new Set(assignment.targetProfileIds.filter(Boolean))] : [];
+      const targets = targetProfileIds.map((profileId) => {
+        const profile = state?.profiles?.find((item) => item.id === profileId);
+        const stableIds = [profile?.studentNumber, profile?.sourceProfileId, profile?.portableProfileId]
+          .map((value) => String(value || "").trim()).filter(Boolean);
+        const matches = ui.classroom.roster.filter((member) => member.status === "active"
+          && (!member.classId || member.classId === classId)
+          && member.studentNumber && stableIds.includes(String(member.studentNumber).trim()));
+        if (!profile || matches.length !== 1) {
+          throw new Error(`学生档案 ${profile?.name || profileId} 尚未与本班唯一在籍成员的学号绑定；未向全班发布。请先在花名册核对学号。`);
+        }
+        return { targetType: "student", targetId: matches[0].id };
+      });
+      if (new Set(targets.map((item) => item.targetId)).size !== targets.length) {
+        throw new Error("多个本机档案指向同一班级成员；请先核对身份，本次未发布。");
+      }
       const selectedSets = (state?.variantSets || []).filter((set) => (assignment.variantSetIds || []).includes(set.id)
         && set.status === "approved" && set.stale !== true);
       if (selectedSets.length && client.syncVariantSets) {
         await client.syncVariantSets(classId, { sets: selectedSets });
       }
-      const response = await client.createAssignment(classId, {
+      const assignmentBody = {
         title: assignment.title,
         instructions: `母题 ${assignment.parentQuestionIds?.length || assignment.questionCount} 道；完整变式 ${assignment.variantQuestionIds?.length || 0} 道。答案与完整解析须在学生提交后显示。`,
-        targetType: "class",
-        targetId: null,
         questionIds: assignment.questionIds,
         questionItems: classroomQuestionItems(assignment.questionIds),
         knowledgePointKeys: assignment.knowledgePointIds || (assignment.topic && assignment.topic !== "全部" ? [assignment.topic] : []),
         target: assignment.target || "完成作答、订正和专项复盘；不以一次训练形成长期能力结论。",
         publish: true
-      });
-      ui.classroom.message = response?.queued
-        ? "作业和已审核变式已保存在同步队列，恢复联网后自动下发。"
-        : "作业和已审核变式已下发到当前班级。";
+      };
+      const recipients = targets.length ? targets : [{ targetType: "class", targetId: null }];
+      const responses = [];
+      for (const recipient of recipients) {
+        responses.push(await client.createAssignment(classId, { ...assignmentBody, ...recipient }));
+      }
+      const queued = responses.filter((response) => response?.queued).length;
+      ui.classroom.message = queued
+        ? `已为 ${recipients.length} 个目标建立作业；其中 ${queued} 项保存在本机同步队列，尚未得到班级服务确认。`
+        : `作业已由班级服务确认，范围：${targets.length ? `${targets.length} 名指定学生` : "当前班级全班"}。`;
       ui.classroom.error = false;
       if (classroomDialog?.open) {
         await loadClassroomDetail(classId);

@@ -153,6 +153,23 @@ public final class LanClassroomTransportHarness {
       require(repeatedJoin.status == 200 && repeatedJoin.bodyText.indexOf(studentOne) >= 0, 20);
       studentAccess = field(repeatedJoin.bodyText, "accessToken");
 
+      String learningBody = "{\"profile\":{\"clientEntityId\":\"profile-lan-a\",\"displayName\":\"Student-A\",\"grade\":\"高一\",\"curriculumVersion\":\"4.3.0\"},\"attempts\":[{\"clientEntityId\":\"attempt-lan-a-1\",\"questionId\":\"q-motion\",\"gradingStatus\":\"incorrect\",\"completedAt\":\"2026-11-20T10:00:00.000Z\",\"finalAnswer\":\"2 m/s\"}]}";
+      String learningPath = "/v1/classes/" + classId + "/learning/sync";
+      LanClassroomTransport.Response firstLearning = call(learningPath, "POST", "Bearer " + studentAccess, learningBody);
+      require(firstLearning.status == 200 && firstLearning.bodyText.indexOf("\"accepted\":1") >= 0, 48);
+      LanClassroomTransport.Response repeatLearning = call(learningPath, "POST", "Bearer " + studentAccess, learningBody);
+      require(repeatLearning.status == 200 && repeatLearning.bodyText.indexOf("\"duplicates\":1") >= 0, 49);
+      LanClassroomTransport.Response learningSummary = call("/v1/classes/" + classId + "/learning/summary", "GET", "Owner " + owner, "");
+      require(learningSummary.status == 200 && learningSummary.bodyText.indexOf("\"attemptCount\":1") >= 0, 50);
+      String examsPath = "/v1/classes/" + classId + "/learning/exams";
+      String examBody = "{\"profile\":{\"clientEntityId\":\"profile-lan-a\"},\"records\":[{\"clientEntityId\":\"exam-lan-a-1\",\"examName\":\"阶段卷\",\"occurredOn\":\"2026-11-20\",\"score\":18,\"maxScore\":20,\"knowledgePointScores\":[]}]}";
+      LanClassroomTransport.Response firstExam = call(examsPath, "POST", "Bearer " + studentAccess, examBody);
+      require(firstExam.status == 200 && firstExam.bodyText.indexOf("\"accepted\":1") >= 0, 53);
+      LanClassroomTransport.Response repeatedExam = call(examsPath, "POST", "Bearer " + studentAccess, examBody);
+      require(repeatedExam.bodyText.indexOf("\"duplicates\":1") >= 0, 54);
+      LanClassroomTransport.Response ownerLearning = call(learningPath, "POST", "Owner " + owner, learningBody);
+      require(ownerLearning.status == 401 || ownerLearning.status == 403, 51);
+
       String studentTwoBody = "{\"code\":\"" + invite + "\",\"displayName\":\"Student-B\",\"deviceId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}";
       LanClassroomTransport.Response secondJoin = call("/v1/invites/join-anonymous", "POST", null, studentTwoBody);
       require(secondJoin.status == 200, 21);
@@ -224,6 +241,9 @@ public final class LanClassroomTransportHarness {
       host.start();
       LanClassroomTransport.Response persisted = call("/v1/classes/" + classId + "/roster", "GET", "Owner " + owner, "");
       require(persisted.status == 200 && persisted.bodyText.indexOf("Student-B") >= 0, 25);
+      LanClassroomTransport.Response persistedLearning = call("/v1/classes/" + classId + "/learning/summary", "GET", "Owner " + owner, "");
+      require(persistedLearning.status == 200 && persistedLearning.bodyText.indexOf("\"attemptCount\":1") >= 0, 52);
+      require(persistedLearning.bodyText.indexOf("\"examCount\":1") >= 0, 55);
       LanClassroomTransport.Response persistedHistory = call("/v1/classes/" + classId + "/assignment-submissions", "GET", "Owner " + owner, "");
       require(persistedHistory.status == 200 && persistedHistory.bodyText.indexOf("correction-v2") >= 0, 45);
       LanClassroomTransport.Response deleted = call("/v1/classes/" + classId, "DELETE", "Owner " + owner, "{}");

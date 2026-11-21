@@ -1,11 +1,18 @@
 # 费曼物理
-当前三端开发候选版本：v4.3.0。Android 学生端、Android 教师端与 Windows 共享题库、学习引擎、备份格式和班级协议；本版取消软件激活码门禁。
+当前三端开发候选版本：v4.3.1。Android 学生端、Android 教师端与 Windows 共享题库、学习引擎、备份格式和班级协议；软件不要求激活码。
 
 一个可安装、离线优先且支持真实联机班级的初高中物理学习应用。v4.0.0 不改变既有题目 ID，并以向后兼容的 state v10 承接 v3.4.1 的 state v9 与 `.pslab` 数据。旧单体 Android 包 `com.physicsstudio.studyroom` 不会被新包覆盖；旧数据须先从旧应用导出 `.pslab`，再按身份导入学生端或教师端。班级创建、加入、成员列表、作业下发、邀请码轮换和删除均以班级服务确认结果为准，不用本机假状态冒充联网成功。
 
 项目继续保留 Windows 版；Android 两个独立包分别使用 `com.physicsstudio.student` 和 `com.physicsstudio.teacher`，可安装在同一设备上。
 
-## v4.3.0 内容与学习证据开发候选
+## v4.3.1 学习证据与班级同步候选
+
+- [Android 学生端 APK](https://github.com/xtu2023/Physics/releases/download/v4.3.1-rc1/Feynman-Physics-Student-Android-v4.3.1.apk) · [Android 教师端 APK](https://github.com/xtu2023/Physics/releases/download/v4.3.1-rc1/Feynman-Physics-Teacher-Android-v4.3.1.apk)
+- [Windows 安装程序](https://github.com/xtu2023/Physics/releases/download/v4.3.1-rc1/Feynman-Physics-Windows-Installer-v4.3.1.exe) · [Windows 发布 ZIP](https://github.com/xtu2023/Physics/releases/download/v4.3.1-rc1/Feynman-Physics-Windows-v4.3.1.zip) · [SHA-256](https://github.com/xtu2023/Physics/releases/download/v4.3.1-rc1/SHA256SUMS-v4.3.1-rc1.txt)
+
+本候选保留首次检查的答案及随后订正版本；看过答案或方法讲解后，同题作答不再算作独立正确。教师定向作业必须绑定本班唯一成员，未绑定时不会扩大为全班。Windows 与 Android 内置同网班级服务均会持久化学习作答和试卷同步数据，按记录 ID 去重，只有得到完整回执才标为同步完成。离线同步队列满 500 条时明确拒绝新增事件，不再静默丢弃旧事件。修订卫星参照物题的轨道条件及一题竖直上抛反例的考点标签，题目 ID 不变。仍须实机跨设备核验；内置班级只适用于同一可信局域网，不是公网服务。Windows 包未签名，Android 为项目本地签名开发候选。
+
+## 历史版本：v4.3.0 内容与学习证据开发候选
 
 本机安装包在 `发布/` 与 `发布/Android/`。以下候选发布状态以 GitHub Releases 实际附件为准。
 
@@ -18,7 +25,7 @@
 
 本候选修正密度切块题的参数化解析，增加题目修订留存、离线作答草稿、教师改分/撤销历史和四个有预测—记录—解释的理想模型探究任务。视频、教材版本、AI 与班级连接状态按真实能力显示；学生作业回执读取失败不再被当作“未提交”。1,897 道内置完整题中 766 道与仓库目录匹配，1,131 道教材节仍待核验；四道高一多表征草稿仍待教师审核。这不是教材实本或教学效果认证。详见[内容核验记录](docs/content-quality-v4.3.0.md)和[教师待审核清单](docs/content-teacher-review.md)。
 
-当前版本文档：[发布说明](docs/release-v4.3.0-rc1.md) · [测试结果](docs/content-test-results-v4.3.0.md) · [师生作业协议](docs/teacher_student_api_contract.md) · [历史作业验收记录](docs/teacher_student_test_report.md)。
+v4.3.0 历史文档：[发布说明](docs/release-v4.3.0-rc1.md) · [测试结果](docs/content-test-results-v4.3.0.md)；当前仍适用的[师生作业协议](docs/teacher_student_api_contract.md)。
 
 三个安装包均为开发候选：Windows 安装器没有正式代码签名，Android 使用本机开发签名。跨设备班级、真机升级和教师逐题审核仍须实际验收。旧 `v4.2.0-rc1` 保留不变。
 
@@ -50,14 +57,14 @@
 
 ## 免激活与教师本机权限
 
-- v4.3.0 三端启动不再索取、读取或校验激活码，不以设备码或联网授权作为学习前提。
+- v4.3.0 起三端启动不再索取、读取或校验激活码，不以设备码或联网授权作为学习前提。
 - 旧 `PSA1` 校验函数、公钥结构和原有授权数据保留供旧工具兼容；不删除旧密钥、私钥归档或用户学习记录。签发管理器不再是使用新版软件的必要组件，也不随本版发布。
 - 教师 PIN 仅保护本机管理入口，不是软件激活码，不替代班级服务端鉴权。PIN 继续使用 PBKDF2 与随机盐；连续输错触发有上限的冷却等待，刷新后也不能直接重设现有 PIN。
 - 私钥归档、管理员工具、签发台账和任何学生真实档案不得上传公开仓库或 Release。
 
 ## Android 版
 
-1. Android 学生端安装文件位于 `发布\Android\费曼物理学生端-Android-v4.3.0.apk`；教师端安装文件位于同目录的 `费曼物理教师端-Android-v4.3.0.apk`。
+1. Android 学生端安装文件位于 `发布\Android\费曼物理学生端-Android-v4.3.1.apk`；教师端安装文件位于同目录的 `费曼物理教师端-Android-v4.3.1.apk`。
 2. 支持 Android 6.0 及以上手机和平板，可离线打开题库并保存学习数据。
 3. Android 版可调用摄像头拍题、识别二维码、选择多张图片与文档；经设备授权后可调用麦克风和可用的运动、光照、磁场传感器。
 4. Android 与 Windows 的本地数据库相互独立；完整 `.pslab` 备份可迁移题目、学习档案、附件与视频，轻量 JSON 用于仅迁移结构化内容。

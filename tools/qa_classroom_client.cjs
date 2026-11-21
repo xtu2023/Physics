@@ -253,6 +253,34 @@ async function main() {
   assert.equal(flushed.pending, 0);
   assert.equal(api.syncStatus().state, "synced");
 
+  fetchHandler = async () => jsonResponse(200, {
+    accepted: 0, duplicates: 0, conflicts: [], lastAcceptedAt: new Date().toISOString()
+  });
+  assert.equal(api.status().authenticated, true);
+  assert.equal(navigator.onLine, true);
+  await assert.rejects(api.syncLearning(CLASS_ID, {
+    profile: { clientEntityId: "profile-local-1", displayName: "学生", grade: "高一" },
+    attempts: [{ clientEntityId: "attempt-unaccepted-1", questionId: "q-1", gradingStatus: "correct" }]
+  }), /未确认|未接收/,
+  "a successful HTTP status with zero accepted learning records must not claim sync success");
+
+  navigator.onLine = false;
+  const queueKey = "physics-classroom-sync-queue-v1";
+  const queuedSeed = Array.from({ length: 500 }, (_, index) => ({
+    id: `seed-${index}`, kind: "learning-attempts", path: `/v1/classes/${CLASS_ID}/learning/sync`,
+    method: "POST", body: { clientEventId: `seed-${index}` }
+  }));
+  localStorage.setItem(queueKey, JSON.stringify(queuedSeed));
+  await assert.rejects(api.syncLearning(CLASS_ID, {
+    profile: { clientEntityId: "profile-local-1", displayName: "学生", grade: "高一" },
+    attempts: [{ clientEntityId: "attempt-overflow-1", questionId: "q-1" }]
+  }), /500|队列已满/,
+  "a full offline queue must reject the new event instead of deleting the oldest one");
+  assert.equal(JSON.parse(localStorage.getItem(queueKey)).length, 500);
+  assert.equal(JSON.parse(localStorage.getItem(queueKey))[0].id, "seed-0");
+  localStorage.removeItem(queueKey);
+  navigator.onLine = true;
+
   const syncedVariantSet = {
     id: "variant-set-local-1",
     parentQuestionId: "question-parent-1",

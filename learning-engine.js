@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "4.3.0",
+    appVersion: "4.3.1",
     stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.3.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.3.1");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
@@ -2736,10 +2736,17 @@
       startedAt: normalizeTimestamp(input.startedAt, createdAt),
       completedAt,
       durationSeconds: Math.max(0, Number(input.durationSeconds) || 0),
-      confidenceBefore: Math.max(1, Math.min(5, Number(input.confidenceBefore) || 1)),
-      confidenceAfter: Math.max(1, Math.min(5, Number(input.confidenceAfter) || 1)),
+      confidenceBefore: Number.isInteger(Number(input.confidenceBefore)) && input.confidenceBefore != null
+        ? Math.max(1, Math.min(5, Number(input.confidenceBefore))) : null,
+      confidenceAfter: Number.isInteger(Number(input.confidenceAfter)) && input.confidenceAfter != null
+        ? Math.max(1, Math.min(5, Number(input.confidenceAfter))) : null,
       hintLevel: Math.max(0, Math.min(5, Number(input.hintLevel) || 0)),
       finalAnswer: String(input.finalAnswer || ""),
+      firstResponse: input.firstResponse && typeof input.firstResponse === "object"
+        ? JSON.parse(JSON.stringify(input.firstResponse)) : null,
+      answerRevisions: Array.isArray(input.answerRevisions)
+        ? input.answerRevisions.slice(0, 20).map((entry) => JSON.parse(JSON.stringify(entry))) : [],
+      solutionViewed: input.solutionViewed === true,
       inquiryId: String(input.inquiryId || "").slice(0, 240),
       grading: input.grading || { status: "review-required", score: null, issues: [] },
       errorType: normalizedErrorType,
@@ -2996,6 +3003,11 @@
       questionRevision: Number(question.contentRevision) || 1,
       savedAt: new Date().toISOString(), status: "draft", model,
       finalAnswer: String(session.finalAnswer || "").slice(0, 30000),
+      firstResponse: session.firstResponse && typeof session.firstResponse === "object"
+        ? JSON.parse(JSON.stringify(session.firstResponse)) : null,
+      answerRevisions: Array.isArray(session.answerRevisions)
+        ? session.answerRevisions.slice(0, 20).map((entry) => JSON.parse(JSON.stringify(entry))) : [],
+      solutionViewed: session.solutionViewed === true,
       selfExplanation: String(session.selfExplanation || "").slice(0, 30000),
       reflection: String(session.reflection || "").slice(0, 10000),
       errorType: normalizeErrorType(session.errorType),
@@ -3491,7 +3503,8 @@
       const scoredAttempts = topicAttempts.filter(isValidAccuracyEvidence);
       const correct = scoredAttempts.filter((attempt) => attempt.grading?.status === "correct");
       const independentCorrect = correct.filter((attempt) => {
-        return Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
+        return attempt.solutionViewed !== true
+          && Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
       });
       const independenceGroupFor = (record) => {
         const question = questionMap.get(record.questionId) || {};
@@ -3743,6 +3756,7 @@
     const latest = attempts.at(-1) || null;
     const independentCorrect = attempts.filter((attempt) => {
       return isValidAccuracyEvidence(attempt) && attempt.grading?.status === "correct"
+        && attempt.solutionViewed !== true
         && Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
     });
     const independentDates = retainedLowHintDates(independentCorrect);
@@ -4395,7 +4409,7 @@
         date: attempt.createdAt,
         title: `完成${attempt.topic || "物理"}练习`,
         detail: `${attempt.grading?.status === "correct" ? "作答正确" : "需复核或订正"} · 提示等级 ${attempt.hintLevel}`,
-        evidence: `建模记录完整度（规则值） ${Number(attempt.modelScore?.total) || 0} · 信心 ${attempt.confidenceBefore}→${attempt.confidenceAfter}`
+        evidence: `建模记录完整度（规则值） ${Number(attempt.modelScore?.total) || 0} · 信心 ${attempt.confidenceBefore ?? "未记录"}→${attempt.confidenceAfter ?? "未记录"}`
       }));
     return [...manual, ...exams, ...attempts]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
@@ -6435,7 +6449,7 @@
             : attempt.grading?.status === "incorrect" || attempt.grading?.status === "wrong"
               ? "incorrect"
               : "pending";
-        const rawScore = Number(attempt.grading?.score);
+        const rawScore = attempt.grading?.score == null ? NaN : Number(attempt.grading.score);
         const score = Number.isFinite(rawScore)
           ? Math.max(0, Math.min(100, rawScore <= 1 ? rawScore * 100 : rawScore))
           : null;
@@ -6456,8 +6470,8 @@
           activeDurationSeconds: Math.max(0, Math.min(86_400, Number(attempt.durationSeconds) || 0)),
           hintViewCount: Math.max(0, Math.min(100, Number(attempt.hintLevel) || 0)),
           maxHintLevel: Math.max(0, Math.min(5, Number(attempt.hintLevel) || 0)),
-          confidenceBefore: Number.isFinite(Number(attempt.confidenceBefore)) ? Math.max(1, Math.min(5, Number(attempt.confidenceBefore))) : null,
-          confidenceAfter: Number.isFinite(Number(attempt.confidenceAfter)) ? Math.max(1, Math.min(5, Number(attempt.confidenceAfter))) : null,
+          confidenceBefore: attempt.confidenceBefore == null ? null : Number.isFinite(Number(attempt.confidenceBefore)) ? Math.max(1, Math.min(5, Number(attempt.confidenceBefore))) : null,
+          confidenceAfter: attempt.confidenceAfter == null ? null : Number.isFinite(Number(attempt.confidenceAfter)) ? Math.max(1, Math.min(5, Number(attempt.confidenceAfter))) : null,
           finalAnswer: String(attempt.finalAnswer || "").slice(0, 30_000),
           gradingStatus,
           score,
@@ -6467,7 +6481,8 @@
           reflection: String(attempt.reflection || "").slice(0, 10_000),
           selfExplanation: String(attempt.selfExplanation || "").slice(0, 10_000),
           modelEvidence: attempt.model && typeof attempt.model === "object" && !Array.isArray(attempt.model) ? attempt.model : {},
-          modelScore: Number.isFinite(Number(attempt.modelScore?.total)) ? Number(attempt.modelScore.total) : null,
+          modelScore: attempt.model && Object.values(attempt.model).some((value) => String(value ?? "").trim())
+            && Number.isFinite(Number(attempt.modelScore?.total)) ? Number(attempt.modelScore.total) : null,
           teacherReviewStatus: gradingStatus === "pending" || attempt.modelingRecordNeedsCheck ? "pending" : "notRequired"
         };
       });
